@@ -21,7 +21,7 @@ LICENSE_HOLDER ?= The idunn Authors
 LIB_PKGS ?= ./fyneui/... ./internal/...
 
 .PHONY: all build build-lib test test-lib cover vet fmt fmt-check lint license \
-        license-fix vuln tidy deps-linux clean
+        license-fix vuln tidy deps-linux no-app-import clean
 
 all: build
 
@@ -45,6 +45,14 @@ cover:
 	$(GO) test -covermode=atomic -coverpkg=./fyneui/...,./internal/... \
 		-coverprofile=coverage.out $(LIB_PKGS)
 	$(GO) tool cover -func=coverage.out | tail -1
+
+## no-app-import enforces the rule the whole layout rests on: fyne.io/fyne/v2/app
+## may be imported only from cmd/. It is what keeps every library package, and
+## therefore almost every test, buildable with no OpenGL and no display.
+no-app-import:
+	@if grep -rln '"fyne.io/fyne/v2/app"' --include='*.go' . | grep -v '^./cmd/'; then \
+		echo "fyne.io/fyne/v2/app imported outside cmd/"; exit 1; \
+	fi
 
 vet:
 	$(GO) vet ./...

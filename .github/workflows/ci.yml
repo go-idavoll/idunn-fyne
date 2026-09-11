@@ -92,6 +92,9 @@ jobs:
       # No native dependencies here on purpose: fyne.io/fyne/v2/test and the
       # widget packages link no driver, so this job proves the library half
       # builds and tests on a machine with no OpenGL and no display.
+      - name: fyne/v2/app is confined to cmd/
+        run: make no-app-import
+
       - name: Test with coverage
         run: |
           go test -covermode=atomic \
@@ -125,6 +128,12 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libgl1-mesa-dev libxcursor-dev libxrandr-dev libxinerama-dev \
             libxi-dev libxxf86vm-dev libwayland-dev libxkbcommon-dev wayland-protocols
+
+      # fyne.io/fyne/v2/app may be imported only from cmd/. That single rule is
+      # what keeps the library half testable on a machine with no OpenGL, which
+      # the coverage job above relies on.
+      - name: fyne/v2/app is confined to cmd/
+        run: make no-app-import
 
       - name: gofmt
         run: |

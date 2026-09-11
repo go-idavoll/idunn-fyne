@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	fyne.io/fyne/v2 v2.8.1
 	github.com/go-idavoll/idunn v0.0.0-20260814214152-a8a3be01047e
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -53,5 +54,4 @@ require (
 	golang.org/x/text v0.40.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260727163830-6c54dddc4772 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
