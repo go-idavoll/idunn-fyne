@@ -95,6 +95,14 @@ func (w *ProgressWindow) deliver() {
 // render writes the snapshot into the widgets. It runs on the Fyne goroutine.
 func (w *ProgressWindow) render(s Snapshot) {
 	if s.Seq == 0 {
+		// Either nothing has happened yet or Reset was just called. Either way
+		// the panel goes back to how it started rather than keeping the last
+		// transaction's wording under a fresh log.
+		w.phase.SetText("")
+		w.message.SetText("Idle.")
+		w.bar.SetValue(0)
+		w.banner.Hide()
+		w.list.Refresh()
 		return
 	}
 

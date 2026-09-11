@@ -206,6 +206,22 @@ func (w *ProgressWindow) Close() {
 	})
 }
 
+// Reset clears the event log and the progress, ready for a new transaction.
+//
+// A host calls it before each CheckForUpdate/Apply run. Without it the panel
+// would show the previous transaction's events alongside the new ones, and the
+// progress bar would appear to jump backwards as the next run starts at
+// PhaseCheck — which is not a bug in the bar but the honest consequence of
+// treating two runs as one.
+func (w *ProgressWindow) Reset() {
+	w.mu.Lock()
+	w.snap = Snapshot{}
+	w.ring = w.ring[:0]
+	w.mu.Unlock()
+
+	w.nudge()
+}
+
 // Events returns a copy of the retained event log, oldest first. It is the model
 // the widgets are drawn from, exposed so a host can log the same transaction it
 // is showing rather than observing it twice.

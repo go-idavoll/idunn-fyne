@@ -226,3 +226,36 @@ func snapshotOf(w *ProgressWindow, e hook.Event) Snapshot {
 	w.OnEvent(e)
 	return w.Snapshot()
 }
+
+// TestResetReturnsThePanelToIdle. Two updates in one session are two
+// transactions, and the second must not be shown on top of the first.
+func TestResetReturnsThePanelToIdle(t *testing.T) {
+	w := renderNow(t)
+	w.render(snapshotOf(w, hook.Event{
+		Phase: hook.PhaseCommit, Message: "installed 1.1.0", Progress: -1,
+		Err: errors.New("gc failed"),
+	}))
+	if len(w.Events()) == 0 {
+		t.Fatal("no events recorded")
+	}
+
+	w.Reset()
+	w.render(w.Snapshot())
+	layOut(w)
+
+	if got := len(w.Events()); got != 0 {
+		t.Errorf("log holds %d events after Reset, want 0", got)
+	}
+	if w.Snapshot().Seq != 0 {
+		t.Errorf("seq = %d after Reset, want 0", w.Snapshot().Seq)
+	}
+	if w.message.Text != "Idle." {
+		t.Errorf("message = %q after Reset, want the idle text", w.message.Text)
+	}
+	if w.bar.Value != 0 {
+		t.Errorf("bar = %v after Reset, want 0", w.bar.Value)
+	}
+	if !w.banner.Hidden {
+		t.Error("the previous transaction's banner is still showing after Reset")
+	}
+}
