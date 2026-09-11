@@ -77,9 +77,18 @@ func (w *ProgressWindow) pump() {
 	for {
 		select {
 		case <-w.stop:
-			// One last render, so the terminal event of a transaction is shown
-			// rather than being the one thing the user never sees.
-			w.deliver()
+			// Deliberately no final render.
+			//
+			// Close usually runs as the application is shutting down, and once
+			// Fyne's main loop has drained its queue it stops marshalling and
+			// runs the work inline on the calling goroutine instead. A render
+			// here would therefore touch widgets from this goroutine, after the
+			// window is already going away -- which Fyne's own thread check
+			// catches, and which nobody could see anyway.
+			//
+			// Nothing is lost: every event nudges the pump, so the terminal
+			// event of a transaction has already been drawn, and a host that
+			// wants it afterwards has Snapshot and Events.
 			return
 		case <-w.kick:
 			w.deliver()
