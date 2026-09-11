@@ -1,0 +1,4 @@
+fyne.io/fyne/v2 v2.8.1 h1:EztGuE2W3Qhd0cWVmU+h5rkzNezUD1To6UqsoLQYUIM=
+fyne.io/fyne/v2 v2.8.1/go.mod h1:kpeuFrClm0fiAgJYr2soTfwKMT5rzNcSKzmgGjxvHOY=
+github.com/go-idavoll/idunn v0.0.0-20260814214152-a8a3be01047e h1:F9vQyDfbh0OICTPngI0U3hvpamjSMLufxF+BLBumTf0=
+github.com/go-idavoll/idunn v0.0.0-20260814214152-a8a3be01047e/go.mod h1:0AMbOIQUfYFXC2UpnFyXOAond9P2/CJQC0lXzUfwNPA=
