@@ -19,6 +19,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -63,6 +64,23 @@ func keysPresent(t *testing.T) map[string]string {
 		out[name] = path
 	}
 	return out
+}
+
+// stubBin is a file that exists and is not a directory, which is all
+// packrun.Runner.locate asks of --packer-bin. It must be created rather than
+// named: "/bin/sh" is not there on Windows, so locate would refuse and the
+// publish would never reach the exec seam these tests replace.
+func stubBin(t *testing.T) string {
+	t.Helper()
+	name := "packer"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte("stub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func newWizard(t *testing.T, o packui.Options) *packui.Wizard {
@@ -166,7 +184,7 @@ func TestWizardPublishIsBlockedWhileTheFormIsWrong(t *testing.T) {
 
 	w := newWizard(t, packui.Options{
 		Config:    cfg,
-		Runner:    &packrun.Runner{Bin: "/bin/sh"},
+		Runner:    &packrun.Runner{Bin: stubBin(t)},
 		RepoDir:   t.TempDir(),
 		LookupEnv: envWith(keysPresent(t)),
 	})
@@ -186,7 +204,7 @@ func TestWizardPublishRunsThePackerAndLogsIt(t *testing.T) {
 `
 	var gotArgv []string
 	runner := &packrun.Runner{
-		Bin:     "/bin/sh", // exists; the exec seam below means it is never run
+		Bin:     stubBin(t), // the exec seam below means it is never actually run
 		Environ: func() []string { return nil },
 		Exec: func(_ context.Context, argv, _ []string, stdout, _ io.Writer) (int, error) {
 			gotArgv = argv
@@ -228,7 +246,7 @@ func TestWizardPublishRunsThePackerAndLogsIt(t *testing.T) {
 func TestWizardPublishRefusesWithoutKeysAndDoesNotRunAnything(t *testing.T) {
 	ran := false
 	runner := &packrun.Runner{
-		Bin:     "/bin/sh",
+		Bin:     stubBin(t),
 		Environ: func() []string { return nil },
 		Exec: func(context.Context, []string, []string, io.Writer, io.Writer) (int, error) {
 			ran = true
@@ -260,7 +278,7 @@ func TestWizardNeverShowsKeyMaterial(t *testing.T) {
 
 	w := newWizard(t, packui.Options{
 		Config:    validConfig(),
-		Runner:    &packrun.Runner{Bin: "/bin/sh"},
+		Runner:    &packrun.Runner{Bin: stubBin(t)},
 		RepoDir:   t.TempDir(),
 		LookupEnv: envWith(map[string]string{packrun.EnvTargetsKey: pem}),
 	})
@@ -395,7 +413,7 @@ func TestWizardWarnsAboutAReferenceTimeThatWouldPublishAnExpiredRepository(t *te
 		t.Run(tc.name, func(t *testing.T) {
 			w := newWizard(t, packui.Options{
 				Config:          validConfig(),
-				Runner:          &packrun.Runner{Bin: "/bin/sh"},
+				Runner:          &packrun.Runner{Bin: stubBin(t)},
 				RepoDir:         t.TempDir(),
 				LookupEnv:       envWith(keysPresent(t)),
 				SourceDateEpoch: strconv.FormatInt(tc.epoch.Unix(), 10),
@@ -425,7 +443,7 @@ func TestWizardWarnsAboutAReferenceTimeThatWouldPublishAnExpiredRepository(t *te
 func TestWizardDoesNotWarnWithoutAReferenceTime(t *testing.T) {
 	w := newWizard(t, packui.Options{
 		Config:    validConfig(),
-		Runner:    &packrun.Runner{Bin: "/bin/sh"},
+		Runner:    &packrun.Runner{Bin: stubBin(t)},
 		RepoDir:   t.TempDir(),
 		LookupEnv: envWith(keysPresent(t)),
 		Now:       func() time.Time { return time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC) },
@@ -444,7 +462,7 @@ func TestWizardWarningReadsAsProse(t *testing.T) {
 	now := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
 	w := newWizard(t, packui.Options{
 		Config:          validConfig(),
-		Runner:          &packrun.Runner{Bin: "/bin/sh"},
+		Runner:          &packrun.Runner{Bin: stubBin(t)},
 		RepoDir:         t.TempDir(),
 		LookupEnv:       envWith(keysPresent(t)),
 		SourceDateEpoch: strconv.FormatInt(now.AddDate(0, 0, -10).Unix(), 10),

@@ -30,6 +30,7 @@ import (
 	"github.com/go-idavoll/idunn-fyne/internal/fixture"
 	"github.com/go-idavoll/idunn/core/fsx"
 	"github.com/go-idavoll/idunn/core/hook"
+	"github.com/go-idavoll/idunn/core/installer"
 	"github.com/go-idavoll/idunn/core/release"
 	"github.com/go-idavoll/idunn/core/updater"
 )
@@ -139,19 +140,47 @@ func TestAdapterDrivesARealUpdate(t *testing.T) {
 	}
 
 	// The bytes on disk are the proof the swap really happened.
-	got, err := os.ReadFile(filepath.Join(root, "current", "share", "notes.txt"))
-	if err != nil {
-		t.Fatalf("reading the installed file: %v", err)
-	}
-	if !strings.Contains(string(got), "demo 1.1.0") {
-		t.Errorf("installed notes.txt = %q, want the 1.1.0 content", got)
-	}
+	assertInstalled(t, root, "1.1.0")
 
 	// And the adapter saw the real transaction, in the real order.
 	assertPhaseOrder(t, ui.Events())
 
 	if x := fyneui.Explain(nil); !x.Benign() {
 		t.Error("a successful update is not presented as benign")
+	}
+}
+
+// assertInstalled checks that want is the live version and that its files really
+// landed.
+//
+// It deliberately does not read through <root>/current. That pointer is a
+// symlink on POSIX and a one-line file naming the target on Windows, because a
+// directory cannot be replaced atomically there and a file can
+// (idunn internal/layout/pointer.go). Reading through it as a path therefore
+// works on one platform and not the other, and internal/layout is not importable
+// from here. installer.InstalledVersion resolves the pointer whatever form it
+// takes, which is both portable and a stronger assertion: it is idunn's own
+// answer to "what is installed".
+func assertInstalled(t *testing.T, root, want string) {
+	t.Helper()
+
+	got, err := installer.InstalledVersion(root)
+	if err != nil {
+		t.Fatalf("reading the installed version: %v", err)
+	}
+	if got != want {
+		t.Fatalf("installed version = %q, want %q", got, want)
+	}
+
+	// The version directory is laid out by idunn and named by the version, so
+	// this path is the same on every platform.
+	notes := filepath.Join(root, "versions", want, "share", "notes.txt")
+	raw, err := os.ReadFile(notes) //nolint:gosec // a path this test just built.
+	if err != nil {
+		t.Fatalf("reading %s: %v", notes, err)
+	}
+	if !strings.Contains(string(raw), "demo "+want) {
+		t.Errorf("installed notes.txt = %q, want the %s content", raw, want)
 	}
 }
 
@@ -260,13 +289,7 @@ func TestAdapterShowsARealRollback(t *testing.T) {
 	}
 
 	// The installation still works, and it is still the old one.
-	got, err := os.ReadFile(filepath.Join(root, "current", "share", "notes.txt"))
-	if err != nil {
-		t.Fatalf("reading the installed file after a rollback: %v", err)
-	}
-	if !strings.Contains(string(got), "demo 1.0.0") {
-		t.Errorf("after a rollback the install reads %q, want the 1.0.0 content", got)
-	}
+	assertInstalled(t, root, "1.0.0")
 
 	var sawRollback bool
 	for _, e := range ui.Events() {
@@ -309,8 +332,8 @@ func TestAdapterReportsADeclinedUpdateAsAnOutcome(t *testing.T) {
 		t.Errorf("a declined update is shown at severity %v; it is an outcome, not a failure",
 			x.Severity)
 	}
-	if _, err := os.Stat(filepath.Join(root, "current")); !os.IsNotExist(err) {
-		t.Error("a declined update left something installed")
+	if v, err := installer.InstalledVersion(root); err != nil || v != "" {
+		t.Errorf("a declined update left version %q installed (err %v)", v, err)
 	}
 }
 
