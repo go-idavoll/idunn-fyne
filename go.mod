@@ -7,7 +7,7 @@ go 1.26.0
 // Move it to a tagged release once one carries them.
 require (
 	fyne.io/fyne/v2 v2.8.1
-	github.com/go-idavoll/idunn v0.0.0-20260915031952-91fb725a4980
+	github.com/go-idavoll/idunn v0.0.0-20260915033350-66b06ed50b42
 )
 
 require (
