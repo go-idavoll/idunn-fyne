@@ -30,3 +30,34 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# SECURITY-CRITICAL: never commit key material or secrets. The packing assistant
+# only ever references signing keys by path, so nothing here should appear in a
+# working tree -- this block exists so a stray file cannot be committed by accident.
+# See idunn AGENTS.md §5.
+*.pem
+*.key
+*.pfx
+*.p12
+*.asc
+*.gpg
+.env
+.env.*
+secrets/
+
+# A TUF repository published by the assistant during a manual trial.
+/tuf-repo/
+
+# Fuzzing artefacts and the Windows fuzz workaround directory.
+**/testdata/fuzz/**/crash-*
+**/testdata/fuzz/**/fuzz-*
+/.gotmp/
+
+# Editors / OS noise.
+.idea/
+.vscode/
+.claude/
+*.swp
+*~
+.DS_Store
+Thumbs.db

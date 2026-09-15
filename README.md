@@ -1,35 +1,94 @@
+<div align="center">
+
 # idunn-fyne
 
 **The Fyne UI sidecar for [idunn](https://github.com/go-idavoll/idunn).**
+_Renders an update; decides nothing about it._
 
-idunn is headless by default and `core` carries no UI dependency. A sidecar is the
-opt-in half: a separate module that implements the two host hooks a user-facing
-update needs — `hook.Observer` to render the lifecycle, `hook.Prompter` to ask the
-one question — and nothing else. Fyne appears in a dependency graph only because a
-host chose to import this (idunn `docs/design.md` §8).
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Status](https://img.shields.io/badge/status-early--implementation-orange.svg)](#status)
+
+</div>
+
+---
+
+## What this is
+
+idunn is a cryptographically secure installer and updater for Go applications. It
+runs headless by default and keeps its `core` free of any UI dependency; UI lives
+in separate sidecar modules that implement two optional interfaces and nothing
+else — `hook.Observer` to render the lifecycle, `hook.Prompter` to ask the one
+question. This is the Fyne one, and the reference implementation for
+[IDN-19](https://github.com/go-idavoll/idunn/blob/main/docs/backlog.md). Fyne
+appears in a dependency graph only because a host chose to import this (idunn
+`docs/design.md` §8).
+
+It contains:
+
+| | |
+|---|---|
+| [`fyneui`](fyneui) | the sidecar: a `Modal` helper, the `Panel` inside it, `hook.Observer` + `hook.Prompter`, and error wording |
+| [`cmd/idunn-fyne-demo`](cmd/idunn-fyne-demo) | a synthetic release going past: installs nothing, touches no root, reaches no network |
+| [`cmd/demo`](cmd/demo) | a host that runs a real update, so the interfaces are shown to be sufficient |
+| [`cmd/packassist`](cmd/packassist) | a packing assistant: writes a `pack.yaml`, runs the idunn packer, resolves the result |
+
+**What it is not.** It makes no trust decision. It verifies nothing, signs
+nothing, and holds no key. Every verdict about what may be installed is
+`core/trust` and go-tuf's, exactly as it is for a headless build.
+
+## Using it
+
+`Modal` is the sidecar with its window management already written: the panel in a
+dialog over the host's own window, raising itself when an update becomes
+something a person should see. Wiring it is two lines, and dropping those two
+lines gives back a headless update.
 
 ```go
-a := app.New()
-ui := fyneui.New(a, "Acme")
+import "github.com/go-idavoll/idunn-fyne/fyneui"
+
+ui := fyneui.NewModal(win)   // win is the host's own window
+defer ui.Close()
 
 u, _ := updater.New(updater.Options{
     Trust: client, FS: fsx.OS(), Root: "/opt/acme", Channel: "stable",
 
-    Observe: ui, // byte-level progress in the window
+    Observe: ui, // byte-level progress in the modal
     Prompt:  ui, // "Install Acme 1.3.0 now?"
 })
 
-go func() {
-    r, err := u.CheckForUpdate(ctx)
-    if err != nil || r == nil {
-        return // nothing to install; stay hidden
+// Never from a widget callback -- see the threading contract below.
+fyneui.Run(func() error {
+    rel, err := u.CheckForUpdate(ctx)
+    if err != nil || rel == nil {
+        return err // nothing to install; the modal stays hidden
     }
-    _ = u.Apply(ctx, r)
-}()
-ui.Window().ShowAndRun()
+    return u.Apply(ctx, rel)
+}, func(err error) {
+    x := fyneui.Explain(err)
+    // x.Title, x.Detail, x.Benign()
+})
 ```
 
-Dropping the two lines gives back a headless update. Nothing else changes.
+**When the modal appears.** It raises itself once, when the update becomes
+something worth interrupting someone for: the first event from a phase past the
+check, or a confirmation. That distinction is the whole reason it is not simply
+shown on the first event — a background check that finds nothing emits check
+events and nothing else, and a window that appeared for it would interrupt
+someone to say that nothing happened. It does not close itself either: the last
+thing an update says is how it ended, and a dialog that vanished on the commit
+would take that away.
+
+**A host that wants the progress somewhere else** — a tab, a preferences pane, a
+status area beside its own content — uses the `Panel` underneath and places the
+widget itself. It is the same renderer; the modal is only the part such a host
+would otherwise have to write again:
+
+```go
+ui := fyneui.NewPanel(win)
+defer ui.Close()
+win.SetContent(ui.Widget())
+ui.Start()    // from the Fyne goroutine, once the window exists
+```
 
 ## What it shows
 
@@ -52,46 +111,222 @@ Outside staging there is no byte count, and none is invented: a quiesce or a
 migration says what it is doing and leaves the bar where it was. A failure keeps the
 bar where it stopped rather than filling it over an error message.
 
-Run `go run ./cmd/idunn-fyne-demo` to watch a synthetic release go past. It installs
-nothing, touches no install root and reaches no network.
+Run `go run ./cmd/idunn-fyne-demo` to watch a synthetic release go past, modal
+and all.
+
+## A byte count is not a position in the update
+
+`hook.Event.Progress` carries a real fraction while staging and `-1` everywhere
+else — and the fraction is of **staging**, not of the transaction. A release whose
+bytes are all in place is nowhere near installed: the swap, the verify and the
+commit are still to come.
+
+So `fyneui.Fraction` gives each phase a span of the bar and places the byte
+fraction inside the span staging owns. Handing the raw value to the bar would fill
+it at the end of the download and then have to move it backwards to tell the truth,
+which reads as "it is doing the update again". Over the rest of a transaction the
+bar is still a step count, and it is labelled `Installing`, never `63%`.
+
+The phase order those spans use is the order idunn **emits** them, which is not the
+order `hook.Phase` declares them: `PhaseVerify` is emitted *after* `PhaseApply`,
+`PhaseStage` is never emitted on success at all, and `PhaseQuiesce` follows
+`PhaseDownload`. Driving a bar from the declaration order sends it backwards near
+the end of every update that has `VerifyAfterApply` switched on. An integration
+test drives a real transaction and fails if the bar would ever step back.
+
+## The threading contract
+
+Three rules. They are not style advice; each one follows from something in
+idunn's or Fyne's source, and getting one wrong breaks an update or freezes a
+window.
+
+**1. Never call `Apply` from the Fyne goroutine.**
+`Prompter.Confirm` blocks by design, and the dialog it raises needs the Fyne
+goroutine in order to be drawn. Calling `Apply` from a widget callback therefore
+blocks the event loop inside `Confirm`, the dialog is queued behind the very
+goroutine waiting for it, and the application freezes for good. Go cannot detect
+which goroutine is the UI one, and Fyne's own check is under `internal/`, so this
+cannot be refused — only survived. `Confirm` honours the context, so an update
+being torn down does not wait on a dialog nobody is looking at, and it gives up
+after `DefaultConfirmTimeout` with `ErrPrompt`, which turns a permanent freeze
+into a five-second hitch and a named error. `fyneui.Run` is the helper that keeps
+the call off the UI goroutine in the first place, and it is the one rule the
+`Modal` cannot take away: Go exposes no way to ask which goroutine is the UI one.
+
+**2. `OnEvent` runs on the updater's goroutine, inside an open transaction.**
+It takes a mutex, folds the event into the model, and hands a repaint on. It
+reaches no Fyne symbol beyond `fyne.Do` after the app exists, because `fyne.Do`
+dereferences `fyne.CurrentApp`, which is nil until the host starts its app — and a
+panic in an Observer is not recovered by core, so it would take the process down
+mid-update. Repaints **coalesce**: a release reporting every megabyte produces one
+repaint per main-loop turn rather than a backlog of stale ones. Do not put work in
+the render callback.
+
+**3. `Reset` before each transaction.** Two updates in one session are two
+transactions. Without it the second is drawn on top of the first and the progress
+bar appears to jump backwards as the next run starts at `PhaseCheck`.
+`Modal.Reset` also takes the dialog away, so the next update raises it again on
+its own terms rather than inheriting the last one's window.
 
 ## How it is built
 
-The split is the point:
+The split inside the package is the point:
 
-- **`Model`** (`progress.go`) turns the event stream into a `State`: the headline, the
-  detail line, the fraction, the throughput estimate and what is left of it. It has no
-  Fyne in it, so what a release's progress *means* is decided in one place and tested
-  without a display.
-- **`ProgressWindow`** (`window.go`) copies a `State` into widgets, and owns the
-  threading. The updater calls `OnEvent` from its own goroutine; Fyne widgets may only
-  be touched on the main one. `OnEvent` therefore does nothing but fold the event into
-  the model under a mutex and hand a repaint to `fyne.Do` — and it **coalesces**, so a
-  release reporting every megabyte produces one repaint per main-loop turn rather than
-  a backlog of stale ones.
+- **`Model`** (`fyneui/progress.go`) turns the event stream into a `Snapshot`:
+  the headline, the detail line, the byte counts, the throughput estimate and
+  what is left of it. It has no Fyne in it, so what a release's progress *means*
+  is decided in one place and tested without a display.
+- **`Panel`** (`fyneui/panel.go`, `observer.go`, `prompter.go`) copies a
+  `Snapshot` into widgets and owns the threading.
+- **`Modal`** (`fyneui/modal.go`) embeds the panel in a dialog and owns nothing
+  else. It adds no rendering and holds no state of its own beyond whether a
+  dialog is on screen, which is the only decision it exists to make.
 
-`Confirm` blocks the updater until the user answers, which is correct — there is
-nothing for it to do until it has a decision — but honours the context, so an update
-being torn down does not wait on a dialog nobody is looking at.
+## Deferred and declined are not failures
 
-## Status
+`updater.ErrDeferred` and `updater.ErrDeclined` arrive as non-nil errors and are
+ordinary outcomes: the update is staged and waiting for a restart, or the user
+said no. `fyneui.Explain` reports both as benign. Showing them in red is the
+easiest mistake to make at this interface, and it teaches people that a working
+updater is broken.
 
-Early, and honest about it: this renders an update and asks one question. It does not
-schedule checks, live in a tray, or show release notes — a host owns all three, and
-each would be a policy decision this module has no business making.
+`Explain` mirrors core's unexported `classify()` over the sentinels idunn
+exports. It is a mirror, not the original: `layout.ErrLayout` and
+`safepath.ErrUnsafe` live under `internal/` and are unreachable from another
+module, so they land in `ClassUnknown` here. An exported `updater.Classify` would
+close that gap.
 
-## Building
+## What a release descriptor contains
 
-Fyne needs a C toolchain and the platform's GL and windowing headers. On Debian or
-Ubuntu:
+`Name`, `Version`, `Channel`, `OS`, `Arch`, `Files[]`, `Requirements`, `Rollout`,
+`LayoutSchema` — and nothing else. No release notes, no download size, no
+publication date, no URL. `cmd/demo` shows every field there is and says so.
+
+Design the UI for that. Filling the gap from a side channel would create a
+second, unsigned metadata path next to the signed one, which is the thing the
+trust model exists to prevent.
+
+## cmd/demo
 
 ```sh
-sudo apt-get install gcc libgl1-mesa-dev xorg-dev libwayland-dev libxkbcommon-dev
+go run ./cmd/demo               # a throwaway root, an in-memory fixture
+go run ./cmd/demo --busy        # the deferred-to-restart path
+go run ./cmd/demo --root DIR --tuf-root anchor.json \
+    --tuf-metadata-url https://updates.example.com/metadata/ \
+    --tuf-targets-url  https://updates.example.com/targets/
+```
+
+By default it installs from an in-memory fixture: no TUF repository, no signing
+key, no network. Everything below the resolver is genuine — staging, the
+transaction journal, the atomic swap, garbage collection — because
+`updater.Resolver` is an exported interface and the fixture stands exactly where
+the trust client stands. With the `--tuf-*` flags it resolves against a real
+repository, and **not one line of the screen changes between the two**.
+
+`--busy` hangs a fake application lock off the updater with
+`BusyDeferToRestart`, so the deferred outcome can be watched: it arrives as a
+non-nil error, is shown calmly, and a button finishes it through `launch.Start`.
+
+## cmd/packassist
+
+```sh
+go run ./cmd/packassist --config pack.yaml --repo ./tuf-repo --packer-bin /usr/local/bin/packer
+```
+
+Four tabs: the release, the files, the generated `pack.yaml`, and the publish.
+
+**It never touches key material.** It learns that a `TUF_*` variable is set,
+stats the file it names so it can say "that file is not there" before a publish
+spends anything finding out, and passes the value to the packer — which opens it,
+in its own process. A variable holding a PEM block is reported as key material
+without being quoted anywhere. It generates no keys and cannot sign `root.json`;
+a root ceremony does that, offline.
+
+**It re-implements no part of publishing.** `internal/packer` cannot be imported
+from another module, so the assistant runs `cmd/packer` as a subprocess. The
+packer owns the repository layout, the signing and the reproducibility rules, and
+a second implementation of any of them in a GUI would be a parallel trust path.
+
+Locating the binary is `--packer-bin` first, then `packer` on `PATH`, and `go
+run` only behind `--allow-go-run`. Fetching and building code is not something a
+publishing tool should do without being asked.
+
+**Its validation is advisory.** It rejects, in the form, what the packer would
+reject when it runs — but whether every `src` exists, and whether two files hold
+identical bytes, only the packer can answer. The summary says so rather than
+calling a clean form "valid".
+
+**Verification is the real done-criterion.** After a publish, "Resolve it as a
+client would" serves the repository on a loopback listener and runs the actual
+`core/trust` client through `Refresh`, `LatestRelease` and every payload. When no
+anchor is supplied it falls back to the repository's own `root.json` and says
+what that is worth: internal consistency, not a signature from the keys your
+installations trust.
+
+## Mirrored upstream rules
+
+Two files hold copies of values that are unexported in idunn and unreachable from
+another module: [`internal/packmodel/mirror.go`](internal/packmodel/mirror.go)
+(the name, channel, os, arch and mode patterns) and the metadata directory names
+in [`internal/packrun`](internal/packrun). Both carry a header saying so.
+
+Copies rot, so the rejection table in `internal/packmodel/validate_test.go` is
+transcribed case for case from idunn's `internal/packer/config_test.go`, and an
+integration test builds the real packer and runs every mirrored rule past it.
+Drift fails a test instead of puzzling a publisher. An exported
+`packer.ValidateConfig([]byte) error` upstream would delete `mirror.go` outright.
+
+## Requirements
+
+Go 1.26 and cgo. Fyne needs a C toolchain and the platform's GL and windowing
+headers; only `cmd/...` links the desktop driver, and only Linux needs the
+headers spelled out:
+
+```sh
+make deps-linux   # libgl1-mesa-dev libxcursor-dev libxrandr-dev libxinerama-dev
+                  # libxi-dev libxxf86vm-dev libwayland-dev libxkbcommon-dev
+                  # wayland-protocols
 ```
 
 macOS needs Xcode command line tools; Windows needs a MinGW toolchain. See
 [Fyne's own prerequisites](https://docs.fyne.io/started/) for the current list.
 
+`fyneui` and everything under `internal/` link no driver, so they build and test
+with **no OpenGL and no display at all**:
+
+```sh
+make test-lib
+```
+
+`make no-app-import` is what keeps that true: `fyne.io/fyne/v2/app` may be
+imported only from `cmd/`. That one rule is what the whole layout rests on, and
+it is why the package's godoc `Example` takes the host's window as a variable
+rather than calling `app.New()` for itself.
+
+## Status
+
+**Early implementation**, pinned to a pseudo-version of idunn and to Fyne 2.8.1.
+idunn's own API is not stable yet, and neither is this. It renders an update and
+asks one question; it does not schedule checks, live in a tray, or show release
+notes — a host owns all three, and each would be a policy decision this module
+has no business making.
+
+Not implemented, deliberately: key generation or handling of any kind, elevation
+UI beyond classifying the outcome (idunn has no interactive elevator on POSIX),
+release notes or download sizes (a descriptor carries none), internationalisation,
+repository management beyond one `publish`.
+
+## Contributing
+
+This repository inherits idunn's [`AGENTS.md`](https://github.com/go-idavoll/idunn/blob/main/AGENTS.md)
+and [`CONTRIBUTING.md`](https://github.com/go-idavoll/idunn/blob/main/CONTRIBUTING.md) —
+they bind every contributor here too, human or AI. Before pushing:
+
+```sh
+make fmt-check && make vet && make lint && make license && make test
+```
+
 ## License
 
-MIT — see [LICENSE](LICENSE). idunn itself is Apache-2.0.
+Apache-2.0 — see [`LICENSE`](LICENSE), matching idunn itself. Every source file
+carries the header and `make license` enforces it.

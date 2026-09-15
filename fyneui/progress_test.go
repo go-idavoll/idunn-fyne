@@ -1,6 +1,16 @@
 // Copyright 2026 The idunn Authors
 //
-// Licensed under the MIT License. See LICENSE for details.
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 // What a sidecar has to get right is not drawing — Fyne does that — but the
 // arithmetic between an event stream and a window: which number is honest, which
@@ -42,9 +52,9 @@ func TestStagingEventsDriveTheBar(t *testing.T) {
 		BytesTotal: 1 << 30,
 	}, at(0))
 
-	s := m.State()
-	if s.Fraction != 0.25 {
-		t.Errorf("Fraction = %v, want 0.25", s.Fraction)
+	s := m.Snapshot()
+	if s.Progress != 0.25 {
+		t.Errorf("Progress = %v, want 0.25", s.Progress)
 	}
 	if s.BytesDone != 256<<20 || s.BytesTotal != 1<<30 {
 		t.Errorf("bytes = %d/%d", s.BytesDone, s.BytesTotal)
@@ -71,7 +81,7 @@ func TestTheSourceIsNamed(t *testing.T) {
 			Phase: hook.PhaseDownload, File: "bin/app", Source: source,
 			BytesTotal: 100, FileCount: 1, FileIndex: 1,
 		}, at(0))
-		if got := m.State().Detail; !strings.HasPrefix(got, want) {
+		if got := m.Snapshot().Detail; !strings.HasPrefix(got, want) {
 			t.Errorf("source %q: detail = %q, want it to start with %q", source, got, want)
 		}
 	}
@@ -83,17 +93,17 @@ func TestNonStagingEventsHaveNoRate(t *testing.T) {
 	var m Model
 	m.Apply(hook.Event{Phase: hook.PhaseDownload, Progress: 0.5, BytesDone: 500, BytesTotal: 1000}, at(0))
 	m.Apply(hook.Event{Phase: hook.PhaseDownload, Progress: 1, BytesDone: 1000, BytesTotal: 1000}, at(1))
-	if m.State().Rate <= 0 {
+	if m.Snapshot().Rate <= 0 {
 		t.Fatal("staging reported no throughput, so the case below proves nothing")
 	}
 
 	m.Apply(hook.Event{Phase: hook.PhaseMigrate, Message: "migrating state", Progress: -1}, at(2))
-	s := m.State()
+	s := m.Snapshot()
 	if s.Rate != 0 || s.Remaining != 0 {
 		t.Errorf("a migration reported %v B/s, %v left", s.Rate, s.Remaining)
 	}
-	if s.Fraction != -1 {
-		t.Errorf("Fraction = %v, want -1 for a phase with no byte count", s.Fraction)
+	if s.Progress != -1 {
+		t.Errorf("Progress = %v, want -1 for a phase with no byte count", s.Progress)
 	}
 	if s.Headline != "Migrating state" {
 		t.Errorf("Headline = %q", s.Headline)
@@ -112,7 +122,7 @@ func TestThroughputSettlesOnASteadyRate(t *testing.T) {
 			File: "bin/app", Source: hook.SourceDownload,
 		}, at(float64(i)))
 	}
-	s := m.State()
+	s := m.Snapshot()
 	if s.Rate < 0.9*perSecond || s.Rate > 1.1*perSecond {
 		t.Errorf("Rate = %.0f B/s, want about %d", s.Rate, perSecond)
 	}
@@ -142,7 +152,7 @@ func TestProgressGoingBackwardsDoesNotProduceANegativeRate(t *testing.T) {
 		BytesDone: 500, BytesTotal: 1000, Progress: 0.5,
 	}, at(2))
 
-	s := m.State()
+	s := m.Snapshot()
 	if s.Rate < 0 {
 		t.Errorf("Rate = %v; a discarded attempt must not produce a negative throughput", s.Rate)
 	}
@@ -160,7 +170,7 @@ func TestTheFirstFailureIsTheOneKept(t *testing.T) {
 	m.Apply(hook.Event{Phase: hook.PhaseVerify, Message: "verifying", Err: first}, at(0))
 	m.Apply(hook.Event{Phase: hook.PhaseRollback, Message: "rolled back"}, at(1))
 
-	s := m.State()
+	s := m.Snapshot()
 	if !errors.Is(s.Err, first) {
 		t.Errorf("Err = %v, want the first failure", s.Err)
 	}
@@ -175,7 +185,7 @@ func TestTheFirstFailureIsTheOneKept(t *testing.T) {
 func TestCommitEndsTheUpdate(t *testing.T) {
 	var m Model
 	m.Apply(hook.Event{Phase: hook.PhaseCommit, Message: "installed 1.3.0", Progress: -1}, at(0))
-	s := m.State()
+	s := m.Snapshot()
 	if !s.Done || s.Err != nil {
 		t.Errorf("state after a commit: done=%v err=%v", s.Done, s.Err)
 	}
@@ -189,7 +199,7 @@ func TestCommitEndsTheUpdate(t *testing.T) {
 func TestAnEventWithoutAMessageFallsBackToItsPhase(t *testing.T) {
 	var m Model
 	m.Apply(hook.Event{Phase: hook.PhaseQuiesce, Progress: -1}, at(0))
-	if got := m.State().Headline; got != "Quiesce" {
+	if got := m.Snapshot().Headline; got != "Quiesce" {
 		t.Errorf("Headline = %q, want the phase", got)
 	}
 }
