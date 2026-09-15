@@ -27,16 +27,10 @@ It contains:
 
 | | |
 |---|---|
-| [`.`](window.go) | `ProgressWindow`: the sidecar as a whole window, with byte-level staging progress. A host adds two lines and gets a visible update |
-| [`fyneui`](fyneui) | the sidecar as a panel to drop into a window the host already owns, plus `Explain` for error wording and `Run` for the threading rule below |
+| [`fyneui`](fyneui) | the sidecar: a `Modal` helper, the `Panel` inside it, `hook.Observer` + `hook.Prompter`, and error wording |
 | [`cmd/idunn-fyne-demo`](cmd/idunn-fyne-demo) | a synthetic release going past: installs nothing, touches no root, reaches no network |
 | [`cmd/demo`](cmd/demo) | a host that runs a real update, so the interfaces are shown to be sufficient |
 | [`cmd/packassist`](cmd/packassist) | a packing assistant: writes a `pack.yaml`, runs the idunn packer, resolves the result |
-
-> **Two adapters, for now.** The root package and `fyneui` arrived from two
-> branches and overlap: one owns a window, the other is embedded in one. They
-> compile and are tested independently, and consolidating them is the next
-> design decision this module owes, not a merge artefact to be settled quietly.
 
 **What it is not.** It makes no trust decision. It verifies nothing, signs
 nothing, and holds no key. Every verdict about what may be installed is
@@ -44,53 +38,56 @@ nothing, and holds no key. Every verdict about what may be installed is
 
 ## Using it
 
-Dropping the two hook lines gives back a headless update. Nothing else changes.
-
-```go
-import fyneui "github.com/go-idavoll/idunn-fyne"
-
-a := app.New()
-ui := fyneui.New(a, "Acme")   // the root package: the sidecar owns the window
-
-u, _ := updater.New(updater.Options{
-    Trust: client, FS: fsx.OS(), Root: "/opt/acme", Channel: "stable",
-
-    Observe: ui, // byte-level progress in the window
-    Prompt:  ui, // "Install Acme 1.3.0 now?"
-})
-
-go func() {
-    r, err := u.CheckForUpdate(ctx)
-    if err != nil || r == nil {
-        return // nothing to install; stay hidden
-    }
-    _ = u.Apply(ctx, r)
-}()
-ui.Window().ShowAndRun()
-```
-
-A host that already owns its window uses the `fyneui` package instead and places
-the panel itself:
+`Modal` is the sidecar with its window management already written: the panel in a
+dialog over the host's own window, raising itself when an update becomes
+something a person should see. Wiring it is two lines, and dropping those two
+lines gives back a headless update.
 
 ```go
 import "github.com/go-idavoll/idunn-fyne/fyneui"
 
-ui := fyneui.New(win)          // the fyneui package: a widget, not a window
+ui := fyneui.NewModal(win)   // win is the host's own window
 defer ui.Close()
-win.SetContent(ui.Widget())
-ui.Start()                      // from the Fyne goroutine, once the window exists
+
+u, _ := updater.New(updater.Options{
+    Trust: client, FS: fsx.OS(), Root: "/opt/acme", Channel: "stable",
+
+    Observe: ui, // byte-level progress in the modal
+    Prompt:  ui, // "Install Acme 1.3.0 now?"
+})
 
 // Never from a widget callback -- see the threading contract below.
 fyneui.Run(func() error {
     rel, err := u.CheckForUpdate(ctx)
     if err != nil || rel == nil {
-        return err
+        return err // nothing to install; the modal stays hidden
     }
     return u.Apply(ctx, rel)
 }, func(err error) {
     x := fyneui.Explain(err)
     // x.Title, x.Detail, x.Benign()
 })
+```
+
+**When the modal appears.** It raises itself once, when the update becomes
+something worth interrupting someone for: the first event from a phase past the
+check, or a confirmation. That distinction is the whole reason it is not simply
+shown on the first event — a background check that finds nothing emits check
+events and nothing else, and a window that appeared for it would interrupt
+someone to say that nothing happened. It does not close itself either: the last
+thing an update says is how it ended, and a dialog that vanished on the commit
+would take that away.
+
+**A host that wants the progress somewhere else** — a tab, a preferences pane, a
+status area beside its own content — uses the `Panel` underneath and places the
+widget itself. It is the same renderer; the modal is only the part such a host
+would otherwise have to write again:
+
+```go
+ui := fyneui.NewPanel(win)
+defer ui.Close()
+win.SetContent(ui.Widget())
+ui.Start()    // from the Fyne goroutine, once the window exists
 ```
 
 ## What it shows
@@ -114,7 +111,8 @@ Outside staging there is no byte count, and none is invented: a quiesce or a
 migration says what it is doing and leaves the bar where it was. A failure keeps the
 bar where it stopped rather than filling it over an error message.
 
-Run `go run ./cmd/idunn-fyne-demo` to watch a synthetic release go past.
+Run `go run ./cmd/idunn-fyne-demo` to watch a synthetic release go past, modal
+and all.
 
 ## A byte count is not a position in the update
 
@@ -148,12 +146,12 @@ goroutine in order to be drawn. Calling `Apply` from a widget callback therefore
 blocks the event loop inside `Confirm`, the dialog is queued behind the very
 goroutine waiting for it, and the application freezes for good. Go cannot detect
 which goroutine is the UI one, and Fyne's own check is under `internal/`, so this
-cannot be refused — only survived. The root package's `Confirm` honours the
-context, so an update being torn down does not wait on a dialog nobody is looking
-at; `fyneui.Confirm` gives up after `DefaultConfirmTimeout` with `ErrPrompt`,
-which turns a permanent freeze into a five-second hitch and a named error.
-`fyneui.Run` is the helper that keeps the call off the UI goroutine in the first
-place.
+cannot be refused — only survived. `Confirm` honours the context, so an update
+being torn down does not wait on a dialog nobody is looking at, and it gives up
+after `DefaultConfirmTimeout` with `ErrPrompt`, which turns a permanent freeze
+into a five-second hitch and a named error. `fyneui.Run` is the helper that keeps
+the call off the UI goroutine in the first place, and it is the one rule the
+`Modal` cannot take away: Go exposes no way to ask which goroutine is the UI one.
 
 **2. `OnEvent` runs on the updater's goroutine, inside an open transaction.**
 It takes a mutex, folds the event into the model, and hands a repaint on. It
@@ -167,17 +165,22 @@ the render callback.
 **3. `Reset` before each transaction.** Two updates in one session are two
 transactions. Without it the second is drawn on top of the first and the progress
 bar appears to jump backwards as the next run starts at `PhaseCheck`.
+`Modal.Reset` also takes the dialog away, so the next update raises it again on
+its own terms rather than inheriting the last one's window.
 
-## How the root package is built
+## How it is built
 
-The split is the point:
+The split inside the package is the point:
 
-- **`Model`** (`progress.go`) turns the event stream into a `State`: the headline, the
-  detail line, the fraction, the throughput estimate and what is left of it. It has no
-  Fyne in it, so what a release's progress *means* is decided in one place and tested
-  without a display.
-- **`ProgressWindow`** (`window.go`) copies a `State` into widgets, and owns the
-  threading described above.
+- **`Model`** (`fyneui/progress.go`) turns the event stream into a `Snapshot`:
+  the headline, the detail line, the byte counts, the throughput estimate and
+  what is left of it. It has no Fyne in it, so what a release's progress *means*
+  is decided in one place and tested without a display.
+- **`Panel`** (`fyneui/panel.go`, `observer.go`, `prompter.go`) copies a
+  `Snapshot` into widgets and owns the threading.
+- **`Modal`** (`fyneui/modal.go`) embeds the panel in a dialog and owns nothing
+  else. It adds no rendering and holds no state of its own beyond whether a
+  dialog is on screen, which is the only decision it exists to make.
 
 ## Deferred and declined are not failures
 
@@ -276,8 +279,8 @@ Drift fails a test instead of puzzling a publisher. An exported
 ## Requirements
 
 Go 1.26 and cgo. Fyne needs a C toolchain and the platform's GL and windowing
-headers; only `cmd/...` and the root package's godoc example link the desktop
-driver, and only Linux needs the headers spelled out:
+headers; only `cmd/...` links the desktop driver, and only Linux needs the
+headers spelled out:
 
 ```sh
 make deps-linux   # libgl1-mesa-dev libxcursor-dev libxrandr-dev libxinerama-dev
@@ -296,8 +299,9 @@ make test-lib
 ```
 
 `make no-app-import` is what keeps that true: `fyne.io/fyne/v2/app` may be
-imported only from `cmd/`, and from the root package's compile-only godoc
-`Example`, which exists to show a host calling `app.New()`.
+imported only from `cmd/`. That one rule is what the whole layout rests on, and
+it is why the package's godoc `Example` takes the host's window as a variable
+rather than calling `app.New()` for itself.
 
 ## Status
 

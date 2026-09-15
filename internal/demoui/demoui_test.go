@@ -81,7 +81,7 @@ func TestDescribeNamesAFirstInstall(t *testing.T) {
 func TestWindowBuildsAndReadsTheInstallation(t *testing.T) {
 	test.NewTempApp(t)
 
-	panel := fyneui.New(nil)
+	panel := fyneui.NewPanel(nil)
 	defer panel.Close()
 
 	root := t.TempDir()

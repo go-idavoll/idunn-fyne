@@ -15,6 +15,10 @@
 // Package fyneui is the Fyne UI sidecar for idunn: it renders update lifecycle
 // events into Fyne widgets and asks the user to confirm an update.
 //
+// Two entry points, one renderer. [Modal] is the helper — a panel in a dialog
+// that manages its own appearance — and [Panel] is the widget tree underneath
+// it, for a host that would rather place the progress itself.
+//
 // It implements two of idunn's optional hooks and nothing else — hook.Observer
 // and hook.Prompter — which is the whole of the contract a UI sidecar is allowed
 // to have (idunn docs/design.md §8). Every decision about whether to trust or
@@ -49,11 +53,13 @@
 //
 // # Using it
 //
-//	win := a.NewWindow("Updater")
-//	ui := fyneui.New(win)
+// [Modal] is the whole sidecar with its window management already written, and
+// it is what a host should reach for first: a panel in a modal dialog over the
+// host's own window, raising itself when an update becomes something a person
+// should see.
+//
+//	ui := fyneui.NewModal(win)
 //	defer ui.Close()
-//	win.SetContent(ui.Widget())
-//	ui.Start() // from the Fyne goroutine, once the window exists
 //
 //	u, err := updater.New(updater.Options{
 //		// ...
@@ -61,8 +67,18 @@
 //		Prompt:  ui,
 //	})
 //
+// [Panel] is the same thing without the dialog, for a host that wants the
+// progress in a place of its own — a tab, a preferences pane, a status area
+// beside its own content:
+//
+//	ui := fyneui.NewPanel(win)
+//	defer ui.Close()
+//	win.SetContent(ui.Widget())
+//	ui.Start() // from the Fyne goroutine, once the window exists
+//
 // Drive the updater with [Run], never from a widget callback directly — see the
-// threading contract on [ProgressWindow.Confirm].
+// threading contract on [Panel.Confirm]. That is the one rule neither of them
+// can take away, because Go cannot tell which goroutine is the UI one.
 package fyneui
 
 import (
@@ -86,29 +102,72 @@ var ErrPrompt = errors.New("fyneui: cannot confirm")
 // slice without limit on the updater's goroutine.
 const LogSize = 256
 
-// DefaultConfirmTimeout bounds how long [ProgressWindow.Confirm] waits for the
+// DefaultConfirmTimeout bounds how long [Panel.Confirm] waits for the
 // UI goroutine to draw the dialog. See the deadlock note on Confirm.
 const DefaultConfirmTimeout = 5 * time.Second
 
 // Snapshot is everything the widgets need in order to draw, as of the last event
 // received. It is a value: the pump copies it under the lock and renders outside
 // the lock, so rendering can never block OnEvent.
+//
+// Everything above Log is worked out by [Model], which has no Fyne in it, so
+// what a release's progress *means* is decided in one place and tested without a
+// display. The widgets only copy the result into labels and a bar.
 type Snapshot struct {
-	Phase    hook.Phase
-	Message  string
-	Progress float64 // as received from core: a fraction of the phase, or -1.
-	Err      error
-	Seq      uint64 // monotonic; 0 means nothing has happened yet.
-	Log      []hook.Event
+	// Phase is the lifecycle phase the last event came from, and Message is
+	// what core said about it, in core's own words.
+	Phase   hook.Phase
+	Message string
+
+	// Headline is the one-line description of what is happening now: the size
+	// staged against the size to stage, while a release is being written, and
+	// the message otherwise.
+	Headline string
+
+	// Detail names the file being written and where its bytes come from, or is
+	// empty outside staging.
+	Detail string
+
+	// Progress is the fraction as received from core: how far through the
+	// PHASE the transaction is, or -1 when there is nothing to be precise
+	// about. Only staging reports a real one. [Fraction] turns it into a
+	// position in the whole update; this is the raw value, and a bar must not
+	// be driven from it directly.
+	Progress float64
+
+	// BytesDone and BytesTotal are the release's byte progress, both zero
+	// outside staging.
+	BytesDone  int64
+	BytesTotal int64
+
+	// Rate is the current throughput in bytes per second, 0 until there is
+	// enough to estimate from. Remaining is how long the rest would take at
+	// that rate, or 0 when it cannot be said.
+	Rate      float64
+	Remaining time.Duration
+
+	// Err is set once something failed, and stays set: an update that went
+	// wrong must not be redrawn as one that is merely busy.
+	Err error
+
+	// Done is set once the update reached its terminal phase, successfully or
+	// not.
+	Done bool
+
+	// Seq is monotonic; 0 means nothing has happened yet.
+	Seq uint64
+
+	// Log is the retained event log, oldest first.
+	Log []hook.Event
 }
 
-// ProgressWindow renders idunn lifecycle events and asks for confirmation. It
+// Panel renders idunn lifecycle events and asks for confirmation. It
 // implements hook.Observer and hook.Prompter.
 //
-// The zero value is not usable; call [New]. A ProgressWindow is safe for
+// The zero value is not usable; call [New]. A Panel is safe for
 // concurrent use, which is the whole point of it: OnEvent arrives on idunn's
 // goroutine while the widgets live on Fyne's.
-type ProgressWindow struct {
+type Panel struct {
 	// win is the parent for dialogs. It may be nil, in which case the widget
 	// tree still renders and Confirm fails closed with ErrPrompt.
 	win fyne.Window
@@ -127,12 +186,27 @@ type ProgressWindow struct {
 	// microseconds instead of seconds.
 	after func(time.Duration) <-chan time.Time
 
+	// now is the clock behind the throughput estimate, injected so the rate is
+	// testable by arithmetic instead of by sleeping.
+	now func() time.Time
+
 	// mu guards the model. The model, not the widgets, is the ground truth:
 	// every render reads it, so a render that arrives late still paints the
 	// truth rather than a stale frame.
-	mu   sync.Mutex
-	snap Snapshot
-	ring []hook.Event
+	mu    sync.Mutex
+	model Model
+	ring  []hook.Event
+
+	// drawn is the Seq of the last snapshot actually painted. The model runs
+	// ahead of the widgets by design -- that is what coalescing means -- and
+	// this is the watermark that says by how much.
+	drawn uint64
+
+	// afterRender runs at the end of every render, on the Fyne goroutine. It
+	// is the seam [Modal] uses to decide when to raise itself, and it is a
+	// field rather than an interface because the only implementer lives in
+	// this package.
+	afterRender func(Snapshot)
 
 	// kick carries at most one pending render. A dropped send is not a lost
 	// update: the render already pending will read the current model.
@@ -146,22 +220,26 @@ type ProgressWindow struct {
 	// Widgets below are touched only on the Fyne goroutine.
 	phase   *widget.Label
 	message *widget.Label
+	detail  *widget.Label
 	bar     *widget.ProgressBar
 	banner  *widget.Label
 	list    *widget.List
 	content *fyne.Container
 }
 
-// New builds a ProgressWindow parented to win and prepares its widgets. win may
-// be nil when the caller only wants the widget tree; Confirm then fails closed,
+// NewPanel builds a Panel parented to win and prepares its widgets. win may be
+// nil when the caller only wants the widget tree; Confirm then fails closed,
 // because a confirmation nobody can see is not a confirmation.
 //
-// Events are recorded from this moment, but nothing is drawn until [Start].
-func New(win fyne.Window) *ProgressWindow {
-	w := &ProgressWindow{
+// Events are recorded from this moment, but nothing is drawn until [Panel.Start].
+// [NewModal] is the same panel with that ceremony, and the dialog around it,
+// already taken care of.
+func NewPanel(win fyne.Window) *Panel {
+	w := &Panel{
 		win:      win,
 		do:       fyne.Do,
 		after:    time.After,
+		now:      time.Now,
 		kick:     make(chan struct{}, 1),
 		stop:     make(chan struct{}),
 		pumpDone: make(chan struct{}),
@@ -174,7 +252,7 @@ func New(win fyne.Window) *ProgressWindow {
 //
 // Events that arrived before Start are not lost — they are in the model, and the
 // first render paints the accumulated state. Start is idempotent.
-func (w *ProgressWindow) Start() {
+func (w *Panel) Start() {
 	w.mu.Lock()
 	if w.started {
 		w.mu.Unlock()
@@ -190,13 +268,13 @@ func (w *ProgressWindow) Start() {
 // Widget returns the tree to place in a window or a larger layout. Returning it
 // rather than taking the window over lets a host put the progress beside its own
 // content instead of in a dialog this package chose for it.
-func (w *ProgressWindow) Widget() fyne.CanvasObject { return w.content }
+func (w *Panel) Widget() fyne.CanvasObject { return w.content }
 
 // Close stops drawing. It is idempotent and safe to call from any goroutine.
 // Events delivered after Close are still recorded — dropping the tail of a
 // transaction would lose exactly the part that says how it ended — they simply
 // stop being drawn.
-func (w *ProgressWindow) Close() {
+func (w *Panel) Close() {
 	w.stopOnce.Do(func() {
 		close(w.stop)
 		w.mu.Lock()
@@ -215,9 +293,9 @@ func (w *ProgressWindow) Close() {
 // progress bar would appear to jump backwards as the next run starts at
 // PhaseCheck — which is not a bug in the bar but the honest consequence of
 // treating two runs as one.
-func (w *ProgressWindow) Reset() {
+func (w *Panel) Reset() {
 	w.mu.Lock()
-	w.snap = Snapshot{}
+	w.model = Model{}
 	w.ring = w.ring[:0]
 	w.mu.Unlock()
 
@@ -227,7 +305,7 @@ func (w *ProgressWindow) Reset() {
 // Events returns a copy of the retained event log, oldest first. It is the model
 // the widgets are drawn from, exposed so a host can log the same transaction it
 // is showing rather than observing it twice.
-func (w *ProgressWindow) Events() []hook.Event {
+func (w *Panel) Events() []hook.Event {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	out := make([]hook.Event, len(w.ring))
@@ -237,10 +315,10 @@ func (w *ProgressWindow) Events() []hook.Event {
 
 // Snapshot returns the current model. Mainly useful to a host that wants to
 // render the same state its own way.
-func (w *ProgressWindow) Snapshot() Snapshot {
+func (w *Panel) Snapshot() Snapshot {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	s := w.snap
+	s := w.model.Snapshot()
 	s.Log = make([]hook.Event, len(w.ring))
 	copy(s.Log, w.ring)
 	return s
@@ -251,7 +329,7 @@ func (w *ProgressWindow) Snapshot() Snapshot {
 //
 // Every call into core/updater belongs here. Calling updater.Apply from a widget
 // callback runs it on the Fyne goroutine, where the confirmation dialog can
-// never be drawn — see the deadlock note on [ProgressWindow.Confirm]. Run exists
+// never be drawn — see the deadlock note on [Panel.Confirm]. Run exists
 // so that the correct thing is also the shorter thing to type.
 func Run(work func() error, done func(error)) {
 	go func() {
@@ -263,16 +341,22 @@ func Run(work func() error, done func(error)) {
 	}()
 }
 
-func (w *ProgressWindow) build() {
+func (w *Panel) build() {
 	w.phase = widget.NewLabel("")
 	w.phase.TextStyle = fyne.TextStyle{Bold: true}
 
 	w.message = widget.NewLabel("Idle.")
 	w.message.Wrapping = fyne.TextWrapWord
+	w.message.TextStyle = fyne.TextStyle{Bold: true}
+
+	w.detail = widget.NewLabel("")
+	w.detail.Wrapping = fyne.TextWrapWord
 
 	w.bar = widget.NewProgressBar()
-	// The label is a step count, never a percentage: core reports no byte
-	// progress at all, so a "%" here would be a number this package invented.
+	// The label on the bar is the step, never a percentage. The bar's position
+	// mixes a byte fraction of staging with a step count over the rest of the
+	// transaction (see [Fraction]), so a "%" on it would be a number no single
+	// thing in the update actually reports.
 	w.bar.TextFormatter = func() string {
 		return StepLabel(w.Snapshot().Phase)
 	}
@@ -302,6 +386,6 @@ func (w *ProgressWindow) build() {
 		},
 	)
 
-	head := container.NewVBox(w.phase, w.message, w.bar, w.banner)
+	head := container.NewVBox(w.phase, w.message, w.bar, w.detail, w.banner)
 	w.content = container.NewBorder(head, nil, nil, nil, w.list)
 }

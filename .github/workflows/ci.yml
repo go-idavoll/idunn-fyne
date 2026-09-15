@@ -81,12 +81,9 @@ jobs:
         run: go test -race ./...
 
   # Coverage is measured once, on Linux, and scoped to the code that carries
-  # tests and needs no driver. ./... as the coverage universe would count cmd/,
-  # which is wiring: it opens a window and hands the widgets to a library
-  # package, and pulling a display into CI to cover those few lines would buy
-  # nothing. The root package is left out for a narrower reason -- its godoc
-  # Example links fyne.io/fyne/v2/app, so it cannot build on a runner with no
-  # OpenGL; the race job above covers it on all three platforms.
+  # tests. ./... as the coverage universe would count cmd/, which is wiring: it
+  # opens a window and hands the widgets to a library package, and pulling a
+  # display into CI to cover those few lines would buy nothing.
   coverage:
     name: coverage (adapter and assistant)
     runs-on: ubuntu-latest

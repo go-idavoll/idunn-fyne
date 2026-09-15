@@ -41,7 +41,7 @@ var refTime = time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 
 // alwaysYes answers the Prompter without a UI, for the tests that are about the
 // update rather than about the dialog.
-type alwaysYes struct{ *fyneui.ProgressWindow }
+type alwaysYes struct{ *fyneui.Panel }
 
 func (alwaysYes) Confirm(context.Context, string) (bool, error) { return true, nil }
 
@@ -91,7 +91,7 @@ func TestAdapterDrivesARealUpdate(t *testing.T) {
 	res := fixture.NewResolver()
 	publish(res, "1.0.0", release.Requirements{})
 
-	ui := fyneui.New(test.NewTempWindow(t, widget.NewLabel("host")))
+	ui := fyneui.NewPanel(test.NewTempWindow(t, widget.NewLabel("host")))
 	defer ui.Close()
 
 	u := newUpdater(t, root, res, updater.Options{
@@ -239,7 +239,7 @@ func TestAdapterShowsARealRollback(t *testing.T) {
 	res := fixture.NewResolver()
 	publish(res, "1.0.0", release.Requirements{})
 
-	ui := fyneui.New(test.NewTempWindow(t, widget.NewLabel("host")))
+	ui := fyneui.NewPanel(test.NewTempWindow(t, widget.NewLabel("host")))
 	defer ui.Close()
 
 	// The first install must succeed, so there is something to roll back to.
@@ -311,7 +311,7 @@ func TestAdapterReportsADeclinedUpdateAsAnOutcome(t *testing.T) {
 	res := fixture.NewResolver()
 	publish(res, "1.0.0", release.Requirements{})
 
-	ui := fyneui.New(test.NewTempWindow(t, widget.NewLabel("host")))
+	ui := fyneui.NewPanel(test.NewTempWindow(t, widget.NewLabel("host")))
 	defer ui.Close()
 
 	u := newUpdater(t, root, res, updater.Options{

@@ -86,7 +86,7 @@ type Options struct {
 // Window is the demo screen.
 type Window struct {
 	opts  Options
-	panel *fyneui.ProgressWindow
+	panel *fyneui.Panel
 
 	installed *widget.Label
 	waiting   *widget.Label
@@ -107,7 +107,7 @@ type Window struct {
 
 // New builds the demo screen. panel is the sidecar under demonstration; it is
 // wired as both the Observer and the Prompter.
-func New(panel *fyneui.ProgressWindow, o Options) *Window {
+func New(panel *fyneui.Panel, o Options) *Window {
 	w := &Window{opts: o, panel: panel}
 	w.build()
 	w.refreshState()

@@ -110,7 +110,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	a := app.New()
 	win := a.NewWindow("idunn — update demo")
 
-	panel := fyneui.New(win)
+	panel := fyneui.NewPanel(win)
 	defer panel.Close()
 
 	now := time.Now

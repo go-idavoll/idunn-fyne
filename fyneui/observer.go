@@ -15,6 +15,8 @@
 package fyneui
 
 import (
+	"time"
+
 	"github.com/go-idavoll/idunn/core/hook"
 )
 
@@ -22,28 +24,24 @@ import (
 //
 // idunn calls this synchronously, on the updater's goroutine, from inside an
 // open transaction (core/updater/apply.go:425). So it does four things and
-// nothing else: take a mutex, copy the event into the model, append to a bounded
-// ring, and make one non-blocking send. Every one of those is total — no
-// allocation that can fail, no interface call, no Fyne call — so OnEvent cannot
-// block the update and cannot panic.
+// nothing else: take a mutex, fold the event into the model, append to a bounded
+// ring, and make one non-blocking send. Folding is a few multiplications and two
+// short Sprintf calls — see [Model] — which is cheap, total and reaches no Fyne
+// symbol, so OnEvent cannot block the update and cannot panic.
 //
 // "Cannot panic" is a correctness requirement here, not politeness: core does
 // not recover a panicking Observer, so one would unwind through Apply and take
 // the host process with it.
 //
-// A nil ProgressWindow is a no-op, matching the convention that a nil hook does
+// A nil Panel is a no-op, matching the convention that a nil hook does
 // nothing.
-func (w *ProgressWindow) OnEvent(e hook.Event) {
+func (w *Panel) OnEvent(e hook.Event) {
 	if w == nil {
 		return
 	}
 
 	w.mu.Lock()
-	w.snap.Phase = e.Phase
-	w.snap.Message = e.Message
-	w.snap.Progress = e.Progress
-	w.snap.Err = e.Err
-	w.snap.Seq++
+	w.model.Apply(e, w.clock())
 	if len(w.ring) == LogSize {
 		// Drop the oldest. copy rather than reslicing so the backing array does
 		// not grow without bound over a long-lived window.
@@ -56,13 +54,23 @@ func (w *ProgressWindow) OnEvent(e hook.Event) {
 	w.nudge()
 }
 
+// clock is the observation time behind the throughput estimate. The zero-valued
+// Panel has no injected clock and must still survive an event, because a host
+// can wire an Observer in before it has built anything.
+func (w *Panel) clock() time.Time {
+	if w.now == nil {
+		return time.Now()
+	}
+	return w.now()
+}
+
 // nudge asks for a render without ever waiting for one.
 //
-// A send on a nil channel is never ready, so a zero-valued ProgressWindow takes
+// A send on a nil channel is never ready, so a zero-valued Panel takes
 // the default branch instead of blocking forever. A full channel means a render
 // is already pending, and that render reads the current model — so dropping this
 // signal loses nothing. Coalescing here is exact, not an approximation.
-func (w *ProgressWindow) nudge() {
+func (w *Panel) nudge() {
 	select {
 	case w.kick <- struct{}{}:
 	default:
@@ -72,7 +80,7 @@ func (w *ProgressWindow) nudge() {
 // pump turns render requests into renders on the Fyne goroutine. It is the only
 // goroutine in this package that touches Fyne, and it exists only between Start
 // and Close, by which time the host's app is running.
-func (w *ProgressWindow) pump() {
+func (w *Panel) pump() {
 	defer close(w.pumpDone)
 	for {
 		select {
@@ -96,27 +104,51 @@ func (w *ProgressWindow) pump() {
 	}
 }
 
-func (w *ProgressWindow) deliver() {
+func (w *Panel) deliver() {
 	s := w.Snapshot()
 	w.do(func() { w.render(s) })
 }
 
+// rendered is the Seq of the last snapshot painted into the widgets.
+func (w *Panel) rendered() uint64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.drawn
+}
+
 // render writes the snapshot into the widgets. It runs on the Fyne goroutine.
-func (w *ProgressWindow) render(s Snapshot) {
+func (w *Panel) render(s Snapshot) {
+	defer func() {
+		w.mu.Lock()
+		w.drawn = s.Seq
+		w.mu.Unlock()
+	}()
+
 	if s.Seq == 0 {
 		// Either nothing has happened yet or Reset was just called. Either way
 		// the panel goes back to how it started rather than keeping the last
 		// transaction's wording under a fresh log.
 		w.phase.SetText("")
 		w.message.SetText("Idle.")
+		w.detail.SetText("")
 		w.bar.SetValue(0)
 		w.banner.Hide()
 		w.list.Refresh()
+		if w.afterRender != nil {
+			w.afterRender(s)
+		}
 		return
 	}
 
 	w.phase.SetText(StepLabel(s.Phase))
-	w.message.SetText(s.Message)
+
+	// The headline is the size staged against the size to stage while a release
+	// is being written, and core's own wording otherwise; the status line under
+	// the bar names the file, where its bytes come from, and what the throughput
+	// says is left. Both come from the model, which worked them out with no Fyne
+	// in scope.
+	w.message.SetText(s.Headline)
+	w.detail.SetText(s.Status())
 
 	// A rollback is not negative progress, it is the way back. Moving the bar
 	// backwards would read as "it is doing the update again", so the value is
@@ -139,5 +171,9 @@ func (w *ProgressWindow) render(s Snapshot) {
 	w.list.Refresh()
 	if n := len(s.Log); n > 0 {
 		w.list.ScrollTo(n - 1)
+	}
+
+	if w.afterRender != nil {
+		w.afterRender(s)
 	}
 }

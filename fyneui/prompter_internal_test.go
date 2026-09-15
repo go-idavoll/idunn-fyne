@@ -26,12 +26,12 @@ import (
 	"github.com/go-idavoll/idunn/core/updater"
 )
 
-// newPromptWindow builds a ProgressWindow with a window to parent dialogs and an
+// newPromptWindow builds a Panel with a window to parent dialogs and an
 // inline UI-thread seam, which is what the Fyne test driver does anyway.
-func newPromptWindow(t *testing.T) *ProgressWindow {
+func newPromptWindow(t *testing.T) *Panel {
 	t.Helper()
 	test.NewTempApp(t)
-	w := New(test.NewTempWindow(t, widget.NewLabel("host")))
+	w := NewPanel(test.NewTempWindow(t, widget.NewLabel("host")))
 	w.do = func(fn func()) { fn() }
 	t.Cleanup(w.Close)
 	return w
@@ -40,7 +40,7 @@ func newPromptWindow(t *testing.T) *ProgressWindow {
 // answerWith runs Confirm on its own goroutine -- which is where a host must
 // call it from -- waits for the dialog to be on screen, then taps one of its
 // buttons by the label this package sets itself.
-func answerWith(t *testing.T, w *ProgressWindow, ctx context.Context, label string) (bool, error) {
+func answerWith(t *testing.T, w *Panel, ctx context.Context, label string) (bool, error) {
 	t.Helper()
 
 	shown := make(chan struct{})
@@ -130,7 +130,7 @@ func TestConfirmNo(t *testing.T) {
 // that cannot be shown is a refusal, never a silent yes.
 func TestConfirmWithoutWindowFailsClosed(t *testing.T) {
 	test.NewTempApp(t)
-	w := New(nil)
+	w := NewPanel(nil)
 	defer w.Close()
 
 	ok, err := w.Confirm(context.Background(), "Install demo 1.1.0 now?")
@@ -144,7 +144,7 @@ func TestConfirmWithoutWindowFailsClosed(t *testing.T) {
 
 // TestConfirmNilReceiver keeps the nil-hook convention from panicking.
 func TestConfirmNilReceiver(t *testing.T) {
-	var w *ProgressWindow
+	var w *Panel
 	ok, err := w.Confirm(context.Background(), "Install?")
 	if ok || !errors.Is(err, ErrPrompt) {
 		t.Fatalf("got (%v, %v), want (false, ErrPrompt)", ok, err)
@@ -250,7 +250,7 @@ func TestConfirmWatchdogStandsDownOnceTheDialogIsUp(t *testing.T) {
 // TestConfirmTimeoutDefaults covers the accessor rather than waiting five
 // seconds for the real default.
 func TestConfirmTimeoutDefaults(t *testing.T) {
-	w := New(nil)
+	w := NewPanel(nil)
 	defer w.Close()
 	if got := w.confirmTimeout(); got != DefaultConfirmTimeout {
 		t.Errorf("confirmTimeout() = %v, want %v", got, DefaultConfirmTimeout)

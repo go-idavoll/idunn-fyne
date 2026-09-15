@@ -1,14 +1,28 @@
 // Copyright 2026 The idunn Authors
 //
-// Licensed under the MIT License. See LICENSE for details.
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
-// Command idunn-fyne-demo replays a synthetic update into the progress window.
+// Command idunn-fyne-demo replays a synthetic update through [fyneui.Modal].
 //
 // It exists because the thing this repository has to get right is what a person
 // sees, and that is the one property a test cannot assert. It installs nothing,
 // touches no install root and reaches no network: the events are made up here,
-// in the shape core/updater emits them, so the window can be looked at without
-// a signed repository to hand.
+// in the shape core/updater emits them, so the modal can be looked at without a
+// signed repository to hand.
+//
+// It is also the shortest complete example of the helper. Everything the host
+// does is in main: a window, a Modal over it, and the two hooks. Nothing below
+// decides when the modal appears or what it says.
 package main
 
 import (
@@ -18,8 +32,9 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/widget"
 
-	fyneui "github.com/go-idavoll/idunn-fyne"
+	"github.com/go-idavoll/idunn-fyne/fyneui"
 	"github.com/go-idavoll/idunn/core/hook"
 )
 
@@ -38,15 +53,20 @@ var files = []struct {
 
 func main() {
 	a := app.New()
-	ui := fyneui.New(a, "Acme — demo")
-	ui.Window().Resize(fyne.NewSize(480, 170))
+	win := a.NewWindow("Acme — demo")
+	win.SetContent(widget.NewLabel(
+		"The application's own window. The updater raises its modal over this."))
+	win.Resize(fyne.NewSize(520, 220))
+
+	ui := fyneui.NewModal(win)
+	defer ui.Close()
 
 	go replay(ui)
-	ui.Window().ShowAndRun()
+	win.ShowAndRun()
 }
 
 // replay emits the events one update produces, at a pace a person can watch.
-func replay(ui *fyneui.ProgressWindow) {
+func replay(ui *fyneui.Modal) {
 	var total int64
 	for _, f := range files {
 		total += f.size

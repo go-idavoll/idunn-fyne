@@ -48,7 +48,7 @@ import (
 // ConfirmTimeout, Confirm gives up with ErrPrompt. The update is refused — the
 // fail-closed answer — and the event loop unwinds instead of hanging forever,
 // so the mistake shows up as a named error rather than a dead window.
-func (w *ProgressWindow) Confirm(ctx context.Context, question string) (bool, error) {
+func (w *Panel) Confirm(ctx context.Context, question string) (bool, error) {
 	if w == nil || w.win == nil {
 		return false, fmt.Errorf("%w: no window to ask in", ErrPrompt)
 	}
@@ -117,7 +117,7 @@ func (w *ProgressWindow) Confirm(ctx context.Context, question string) (bool, er
 	}
 }
 
-func (w *ProgressWindow) confirmTimeout() time.Duration {
+func (w *Panel) confirmTimeout() time.Duration {
 	if w.ConfirmTimeout > 0 {
 		return w.ConfirmTimeout
 	}

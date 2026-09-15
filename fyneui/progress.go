@@ -1,14 +1,17 @@
 // Copyright 2026 The idunn Authors
 //
-// Licensed under the MIT License. See LICENSE for details.
-
-// Package fyneui is a UI sidecar for idunn: it renders the update lifecycle into
-// a Fyne window and asks the user the one question the updater may ask.
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
 //
-// It is a thin adapter, not a fork of core. Everything it knows arrives through
-// hook.Event and hook.Context; it makes no trust decision, performs no I/O, and
-// the host that imports it is the only reason Fyne appears in a dependency graph
-// at all (docs/design.md §8).
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package fyneui
 
 import (
@@ -19,60 +22,19 @@ import (
 	"github.com/go-idavoll/idunn/core/hook"
 )
 
-// State is everything the window draws, derived from the events seen so far.
-//
-// It is a plain value with no Fyne in it, which is the point: what a release's
-// progress *means* is worked out here and tested without a display, and the
-// widget code below only copies the result into labels and a bar.
-type State struct {
-	// Headline is the one-line description of what is happening now.
-	Headline string
-
-	// Detail names the file being written and where its bytes come from, or is
-	// empty outside staging.
-	Detail string
-
-	// Fraction is how far the whole update has got, in [0,1], or -1 when there
-	// is nothing to be precise about. Only staging has a real number; a
-	// migration or a quiesce has none, and inventing one would be worse than
-	// admitting it.
-	Fraction float64
-
-	// BytesDone and BytesTotal are the release's byte progress, both zero
-	// outside staging.
-	BytesDone  int64
-	BytesTotal int64
-
-	// Rate is the current throughput in bytes per second, 0 until there is
-	// enough to estimate from. Remaining is how long the rest would take at
-	// that rate, or 0 when it cannot be said.
-	Rate      float64
-	Remaining time.Duration
-
-	// Phase is the lifecycle phase the last event came from.
-	Phase hook.Phase
-
-	// Err is set once something failed, and stays set: an update that went
-	// wrong must not be redrawn as one that is merely busy.
-	Err error
-
-	// Done is set once the update reached its terminal phase, successfully or
-	// not.
-	Done bool
-}
-
 // rateWindow is how much of the past the throughput estimate remembers. Short
 // enough to react when a release moves from reused files to a download, long
 // enough not to swing on one buffer.
 const rateWindow = 3 * time.Second
 
-// Model turns the event stream into a State.
+// Model turns the event stream into a [Snapshot].
 //
-// It is deliberately separate from the window: the updater calls the Observer
+// It is deliberately separate from the widgets: the updater calls the Observer
 // from its own goroutine, and what has to happen there is cheap bookkeeping,
-// not a repaint.
+// not a repaint. It has no Fyne in it, so what a release's progress *means* is
+// worked out in one place and tested without a display.
 type Model struct {
-	state State
+	snap Snapshot
 
 	// The throughput estimate: an exponentially weighted average over the
 	// samples seen, which is enough to be steady without keeping a history.
@@ -84,23 +46,25 @@ type Model struct {
 // Apply folds one event into the model. now is the observation time, injected so
 // the throughput estimate is testable without sleeping.
 func (m *Model) Apply(e hook.Event, now time.Time) {
-	m.state.Phase = e.Phase
+	m.snap.Phase = e.Phase
+	m.snap.Message = e.Message
+	m.snap.Seq++
 	if e.Err != nil {
 		// The first failure is the one worth showing: what follows it is
 		// usually the rollback describing the same accident.
-		if m.state.Err == nil {
-			m.state.Err = e.Err
+		if m.snap.Err == nil {
+			m.snap.Err = e.Err
 		}
 	}
 	switch e.Phase {
 	case hook.PhaseCommit, hook.PhaseRollback:
-		m.state.Done = true
+		m.snap.Done = true
 	}
 
-	m.state.Headline = headline(e)
-	m.state.Detail = detail(e)
-	m.state.Fraction = e.Progress
-	m.state.BytesDone, m.state.BytesTotal = e.BytesDone, e.BytesTotal
+	m.snap.Headline = headline(e)
+	m.snap.Detail = detail(e)
+	m.snap.Progress = e.Progress
+	m.snap.BytesDone, m.snap.BytesTotal = e.BytesDone, e.BytesTotal
 
 	if e.BytesTotal == 0 {
 		// Outside staging there is no throughput to report, and carrying the
@@ -109,12 +73,13 @@ func (m *Model) Apply(e hook.Event, now time.Time) {
 		return
 	}
 	m.sample(e.BytesDone, now)
-	m.state.Rate = m.rate
-	m.state.Remaining = remaining(e.BytesTotal-e.BytesDone, m.rate)
+	m.snap.Rate = m.rate
+	m.snap.Remaining = remaining(e.BytesTotal-e.BytesDone, m.rate)
 }
 
-// State returns what the window should draw.
-func (m *Model) State() State { return m.state }
+// Snapshot returns what the widgets should draw. The log and the sequence
+// number are the Panel's to fill in; everything the arithmetic produces is here.
+func (m *Model) Snapshot() Snapshot { return m.snap }
 
 // sample folds one observation into the throughput estimate.
 //
@@ -144,7 +109,7 @@ func (m *Model) sample(done int64, now time.Time) {
 
 func (m *Model) reset() {
 	m.lastAt, m.lastBytes, m.rate = time.Time{}, 0, 0
-	m.state.Rate, m.state.Remaining = 0, 0
+	m.snap.Rate, m.snap.Remaining = 0, 0
 }
 
 // remaining is how long the rest takes at the current rate, or zero when that
@@ -205,7 +170,7 @@ func detail(e hook.Event) string {
 }
 
 // Status is the line under the bar: throughput and what is left of it.
-func (s State) Status() string {
+func (s Snapshot) Status() string {
 	if s.Err != nil {
 		return s.Err.Error()
 	}

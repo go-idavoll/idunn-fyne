@@ -91,7 +91,18 @@ const hold = -1.0
 //
 // The bar is therefore still a step count over most of a transaction, and must
 // never be presented as a percentage of a download.
+//
+// The one exception is the end. A committed update fills the bar outright,
+// because the phases after staging report no fraction at all and there is
+// nothing left to be waiting for. A failure does not: a full bar over an error
+// message is the worst of both, so the bar stays where the update stopped.
 func Fraction(s Snapshot) float64 {
+	if s.Done && s.Err == nil && s.Phase != hook.PhaseRollback {
+		// A finished update is full, whatever the last event said about its
+		// fraction: the phases after staging carry none, and a bar left at
+		// nine tenths is how a completed install looks unfinished.
+		return 1
+	}
 	st, ok := steps[s.Phase]
 	if !ok || st.from < 0 {
 		return hold

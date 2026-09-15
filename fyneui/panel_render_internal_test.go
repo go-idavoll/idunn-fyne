@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/test"
@@ -27,12 +28,12 @@ import (
 	"github.com/go-idavoll/idunn/core/updater"
 )
 
-// renderNow builds a started ProgressWindow whose widgets are laid out in a real
+// renderNow builds a started Panel whose widgets are laid out in a real
 // (test-driver) window, so the list callbacks and the bar formatter actually run.
-func renderNow(t *testing.T) *ProgressWindow {
+func renderNow(t *testing.T) *Panel {
 	t.Helper()
 	test.NewTempApp(t)
-	w := New(nil)
+	w := NewPanel(nil)
 	w.do = func(fn func()) { fn() }
 	win := test.NewTempWindow(t, w.Widget())
 	win.Resize(fyne.NewSize(600, 400))
@@ -42,7 +43,7 @@ func renderNow(t *testing.T) *ProgressWindow {
 
 // layOut forces the widget tree through a layout pass, which is what makes the
 // list's length and update callbacks run.
-func layOut(w *ProgressWindow) {
+func layOut(w *Panel) {
 	test.LaidOutObjects(w.Widget())
 	w.list.Refresh()
 }
@@ -85,14 +86,85 @@ func TestRenderTracksASuccessfulTransaction(t *testing.T) {
 	if w.phase.Text != "Finishing" {
 		t.Errorf("phase label = %q, want %q", w.phase.Text, "Finishing")
 	}
-	if w.message.Text != "installed 1.1.0" {
+	// The headline is core's own wording, capitalised: outside staging there is
+	// no byte count to put there instead.
+	if w.message.Text != "Installed 1.1.0" {
 		t.Errorf("message = %q, want the last one", w.message.Text)
 	}
-	if got := w.bar.Value; got != steps[hook.PhaseCommit].from {
-		t.Errorf("bar = %v, want %v", got, steps[hook.PhaseCommit].from)
+	// A committed update fills the bar outright rather than stopping at the
+	// commit step's own position: the phases after staging report no fraction,
+	// and a bar left at the commit step is how a finished install looks unfinished.
+	if got := w.bar.Value; got != 1 {
+		t.Errorf("bar = %v, want a full bar after a commit (the commit step sits at %v)",
+			got, steps[hook.PhaseCommit].from)
 	}
 	if !w.banner.Hidden {
 		t.Error("the failure banner is showing after a clean run")
+	}
+}
+
+// TestRenderShowsTheByteProgressOfStaging. Staging is the one part of an update
+// that has a real number attached, and it is the part people wait through: the
+// size, the file, where its bytes come from, and what the throughput says is
+// left all belong on screen while it runs.
+func TestRenderShowsTheByteProgressOfStaging(t *testing.T) {
+	w := renderNow(t)
+
+	// Two events a second apart, so the throughput estimate has something to
+	// work from without any sleeping.
+	w.now = func() time.Time { return time.Unix(1_700_000_000, 0) }
+	w.render(snapshotOf(w, hook.Event{
+		Phase: hook.PhaseDownload, Message: "staging 1.3.0", Progress: 0,
+		File: "lib/libcef.so", FileIndex: 3, FileCount: 9, Source: hook.SourceDownload,
+		BytesDone: 0, BytesTotal: 1 << 30,
+	}))
+	w.now = func() time.Time { return time.Unix(1_700_000_001, 0) }
+	w.render(snapshotOf(w, hook.Event{
+		Phase: hook.PhaseDownload, Message: "staging 1.3.0", Progress: 0.5,
+		File: "lib/libcef.so", FileIndex: 3, FileCount: 9, Source: hook.SourceDownload,
+		BytesDone: 512 << 20, BytesTotal: 1 << 30,
+	}))
+	layOut(w)
+
+	if got, want := w.message.Text, "512.0 MiB of 1.0 GiB"; got != want {
+		t.Errorf("headline = %q, want %q", got, want)
+	}
+	if got := w.detail.Text; !strings.Contains(got, "Downloading lib/libcef.so (3 of 9)") {
+		t.Errorf("detail = %q, want it to name the file and where its bytes come from", got)
+	}
+	if got := w.detail.Text; !strings.Contains(got, "/s") || !strings.Contains(got, "left") {
+		t.Errorf("detail = %q, want the throughput and what is left of it", got)
+	}
+	// The bar is a position in the update, not in the download: half the bytes
+	// staged is nowhere near half an install.
+	if got := w.bar.Value; got >= 0.5 {
+		t.Errorf("bar = %v for half-staged bytes; that is a fraction of staging, "+
+			"not of the transaction", got)
+	}
+}
+
+// TestRenderLeavesTheBarWhereAFailureStoppedIt. A full bar over an error message
+// is the worst of both: it says the update finished and that it did not.
+func TestRenderLeavesTheBarWhereAFailureStoppedIt(t *testing.T) {
+	w := renderNow(t)
+	boom := errors.New("an installed file does not match its verified target")
+
+	w.render(snapshotOf(w, hook.Event{
+		Phase: hook.PhaseDownload, Progress: 0.4, BytesDone: 40, BytesTotal: 100,
+	}))
+	stopped := w.bar.Value
+
+	w.render(snapshotOf(w, hook.Event{Phase: hook.PhaseVerify, Message: "verifying", Progress: -1, Err: boom}))
+	w.render(snapshotOf(w, hook.Event{Phase: hook.PhaseRollback, Message: "rolled back", Progress: -1}))
+	layOut(w)
+
+	if got := w.bar.Value; got == 1 {
+		t.Error("a failed update filled the bar")
+	} else if got < stopped {
+		t.Errorf("bar = %v, below the %v it had reached; a rollback is not negative progress", got, stopped)
+	}
+	if w.banner.Hidden {
+		t.Error("the failure banner is hidden after a failure")
 	}
 }
 
@@ -222,7 +294,7 @@ func TestRunReportsBackOnTheUIGoroutine(t *testing.T) {
 
 // snapshotOf records e and returns the model that results, so a render test
 // drives the same path OnEvent does.
-func snapshotOf(w *ProgressWindow, e hook.Event) Snapshot {
+func snapshotOf(w *Panel, e hook.Event) Snapshot {
 	w.OnEvent(e)
 	return w.Snapshot()
 }

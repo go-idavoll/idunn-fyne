@@ -24,13 +24,13 @@ import (
 	"github.com/go-idavoll/idunn/core/hook"
 )
 
-// newTestWindow builds a ProgressWindow whose UI-thread seam runs inline, which
+// newTestWindow builds a Panel whose UI-thread seam runs inline, which
 // is what the Fyne test driver does anyway. Tests that need to control when a
 // render happens replace do themselves.
-func newTestWindow(t *testing.T) *ProgressWindow {
+func newTestWindow(t *testing.T) *Panel {
 	t.Helper()
 	test.NewTempApp(t)
-	w := New(nil)
+	w := NewPanel(nil)
 	w.do = func(fn func()) { fn() }
 	t.Cleanup(w.Close)
 	return w
@@ -41,7 +41,7 @@ func newTestWindow(t *testing.T) *ProgressWindow {
 // an OnEvent that blocks stalls an update mid-flight. Here nothing is draining
 // the render channel at all, which is the worst case, and it must still return.
 func TestOnEventNeverBlocks(t *testing.T) {
-	w := New(nil) // deliberately not started: no pump, nothing draining kick.
+	w := NewPanel(nil) // deliberately not started: no pump, nothing draining kick.
 	defer w.Close()
 
 	const events = 100_000
@@ -70,11 +70,11 @@ func TestOnEventNeverBlocks(t *testing.T) {
 func TestOnEventNeverPanics(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		w    *ProgressWindow
+		w    *Panel
 	}{
 		{"nil receiver", nil},
-		{"zero value", &ProgressWindow{}},
-		{"constructed but never started", New(nil)},
+		{"zero value", &Panel{}},
+		{"constructed but never started", NewPanel(nil)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			defer func() {
@@ -115,7 +115,7 @@ func TestOnEventCoalesces(t *testing.T) {
 // events from that window must not be lost.
 func TestStartRendersEventsThatArrivedFirst(t *testing.T) {
 	test.NewTempApp(t)
-	w := New(nil)
+	w := NewPanel(nil)
 	defer w.Close()
 
 	var (
@@ -166,7 +166,7 @@ func TestStartRendersEventsThatArrivedFirst(t *testing.T) {
 
 // TestLogIsBounded guards the one unbounded thing OnEvent could otherwise do.
 func TestLogIsBounded(t *testing.T) {
-	w := New(nil)
+	w := NewPanel(nil)
 	defer w.Close()
 
 	for i := 0; i < LogSize*3; i++ {
@@ -192,7 +192,7 @@ func TestCloseIsIdempotent(t *testing.T) {
 	w.Close()
 	w.Close()
 
-	never := New(nil)
+	never := NewPanel(nil)
 	never.Close()
 	never.Close()
 }
