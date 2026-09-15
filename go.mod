@@ -2,12 +2,14 @@ module github.com/go-idavoll/idunn-fyne
 
 go 1.26.0
 
-// idunn is pinned to the commit that introduced the byte-level Observer fields
-// this sidecar renders (hook.Event.BytesDone/BytesTotal/Source, IDN-12/IDN-19).
-// Move it to a tagged release once one carries them.
+// idunn is pinned to the commit on its main branch that introduced the
+// byte-level Observer fields this sidecar renders
+// (hook.Event.BytesDone/BytesTotal/Source, IDN-12/IDN-19). It is a
+// pseudo-version because idunn publishes no tags yet; move it to a tagged
+// release once one carries them.
 require (
 	fyne.io/fyne/v2 v2.8.1
-	github.com/go-idavoll/idunn v0.0.0-20260915033350-66b06ed50b42
+	github.com/go-idavoll/idunn v0.0.0-20260915042849-ffee4e5bb18c
 )
 
 require (
