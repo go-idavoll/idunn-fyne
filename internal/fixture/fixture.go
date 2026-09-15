@@ -30,9 +30,11 @@
 package fixture
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 
@@ -128,10 +130,14 @@ type Resolver struct {
 	// LatestErr, when set, is returned by every LatestRelease.
 	LatestErr error
 
-	// Tamper, when set, rewrites the bytes returned for a target. call counts
-	// from 1 per target, so a caller can let staging succeed and make the
-	// post-apply re-read fail — which is the only honest way to demonstrate
-	// VerifyAfterApply catching something.
+	// Tamper, when set, rewrites the bytes a target resolves to, for Target and
+	// therefore for Materialize. call counts from 1 per target.
+	//
+	// VerifyStream is deliberately not routed through it: it answers against the
+	// bytes that were published, which is where a signed hash stands. A Tamper
+	// that fires is therefore exactly the thing VerifyAfterApply exists to
+	// catch — staging writes what it was handed, and the post-apply re-read
+	// refuses it.
 	Tamper func(target string, call int, data []byte) []byte
 
 	calls map[string]int
@@ -203,6 +209,65 @@ func (r *Resolver) Target(targetPath string) ([]byte, error) {
 		out = r.Tamper(targetPath, r.calls[targetPath], out)
 	}
 	return out, nil
+}
+
+// Materialize streams the bytes of one target into w.
+//
+// It is the streaming half of updater.Resolver that core/stage consumes in place
+// of Target, so a release goes past in a copy window rather than arriving as one
+// allocation per file (idunn IDN-12). The fixture verifies nothing here for the
+// same reason it verifies nothing anywhere: by the time the updater asks for a
+// target, whether to trust it has already been settled upstream.
+func (r *Resolver) Materialize(targetPath string, w io.Writer) error {
+	data, err := r.Target(targetPath)
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write(data); err != nil {
+		return fmt.Errorf("fixture: writing target %q: %w", targetPath, err)
+	}
+	return nil
+}
+
+// TargetLength returns the length a target was published with, without counting
+// as a read. It is the signed length in the real system, so it is taken from the
+// published bytes and never from what Tamper would hand out — a tampered payload
+// of the wrong size has to be answerable as wrong.
+func (r *Resolver) TargetLength(targetPath string) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	data, ok := r.byPath[targetPath]
+	if !ok {
+		return 0, fmt.Errorf("fixture: no such target %q", targetPath)
+	}
+	return int64(len(data)), nil
+}
+
+// VerifyStream reports whether rd yields exactly the bytes a target was
+// published with.
+//
+// This is the one verdict the fixture does give, and it stands where the signed
+// hash stands: bytes that did not come from Materialize — a file reused from an
+// installed version, an installed file re-read by VerifyAfterApply — are
+// admitted only by this.
+func (r *Resolver) VerifyStream(targetPath string, rd io.Reader) error {
+	r.mu.Lock()
+	want, ok := r.byPath[targetPath]
+	r.mu.Unlock()
+
+	if !ok {
+		return fmt.Errorf("fixture: no such target %q", targetPath)
+	}
+
+	got, err := io.ReadAll(io.LimitReader(rd, int64(len(want))+1))
+	if err != nil {
+		return fmt.Errorf("fixture: reading target %q: %w", targetPath, err)
+	}
+	if !bytes.Equal(got, want) {
+		return fmt.Errorf("fixture: target %q does not match the published bytes", targetPath)
+	}
+	return nil
 }
 
 func key(channel, goos, goarch string) string {

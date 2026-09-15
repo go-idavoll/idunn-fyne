@@ -48,21 +48,24 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
           check-latest: true
 
-      # Only ./cmd/... links the Fyne desktop driver, and only Linux needs the
-      # headers spelled out: macOS and Windows drive their native APIs through
-      # the toolchain the runner already has.
+      # Fyne is cgo: it needs the platform's GL and windowing headers. Only
+      # ./cmd/... links the desktop driver, and only Linux needs the headers
+      # spelled out: macOS and Windows drive their native APIs through the
+      # toolchain the runner already has.
       - name: Native build dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libgl1-mesa-dev libxcursor-dev libxrandr-dev libxinerama-dev \
+            gcc libgl1-mesa-dev libxcursor-dev libxrandr-dev libxinerama-dev \
             libxi-dev libxxf86vm-dev libwayland-dev libxkbcommon-dev wayland-protocols
 
       - name: Build
@@ -71,18 +74,26 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # The window is driven through Fyne's test driver, which needs no display
+      # and no GPU -- but it is a real widget tree, so this is the build that
+      # would catch a repaint touching a widget from the wrong goroutine.
       - name: Test (race)
         run: go test -race ./...
 
   # Coverage is measured once, on Linux, and scoped to the code that carries
-  # tests. ./... as the coverage universe would count cmd/, which is wiring: it
-  # opens a window and hands the widgets to a library package, and pulling a
-  # display into CI to cover those few lines would buy nothing.
+  # tests and needs no driver. ./... as the coverage universe would count cmd/,
+  # which is wiring: it opens a window and hands the widgets to a library
+  # package, and pulling a display into CI to cover those few lines would buy
+  # nothing. The root package is left out for a narrower reason -- its godoc
+  # Example links fyne.io/fyne/v2/app, so it cannot build on a runner with no
+  # OpenGL; the race job above covers it on all three platforms.
   coverage:
     name: coverage (adapter and assistant)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@v7
         with:
@@ -116,6 +127,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@v7
         with:
@@ -126,7 +139,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libgl1-mesa-dev libxcursor-dev libxrandr-dev libxinerama-dev \
+            gcc libgl1-mesa-dev libxcursor-dev libxrandr-dev libxinerama-dev \
             libxi-dev libxxf86vm-dev libwayland-dev libxkbcommon-dev wayland-protocols
 
       # fyne.io/fyne/v2/app may be imported only from cmd/. That single rule is
@@ -158,6 +171,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@v7
         with:
@@ -168,7 +183,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libgl1-mesa-dev libxcursor-dev libxrandr-dev libxinerama-dev \
+            gcc libgl1-mesa-dev libxcursor-dev libxrandr-dev libxinerama-dev \
             libxi-dev libxxf86vm-dev libwayland-dev libxkbcommon-dev wayland-protocols
 
       - name: govulncheck

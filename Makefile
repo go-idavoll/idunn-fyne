@@ -49,8 +49,14 @@ cover:
 ## no-app-import enforces the rule the whole layout rests on: fyne.io/fyne/v2/app
 ## may be imported only from cmd/. It is what keeps every library package, and
 ## therefore almost every test, buildable with no OpenGL and no display.
+##
+## ./example_test.go is the one exemption. It is a compile-only godoc Example
+## showing a host wiring the sidecar in, so app.New() is the point of it; the
+## package it belongs to is kept out of LIB_PKGS for exactly that reason and is
+## built and tested by the native-toolchain job instead.
 no-app-import:
-	@if grep -rln '"fyne.io/fyne/v2/app"' --include='*.go' . | grep -v '^./cmd/'; then \
+	@if grep -rln '"fyne.io/fyne/v2/app"' --include='*.go' . \
+		| grep -v '^./cmd/' | grep -v '^./example_test.go$$'; then \
 		echo "fyne.io/fyne/v2/app imported outside cmd/"; exit 1; \
 	fi
 

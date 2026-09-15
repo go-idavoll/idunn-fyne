@@ -1,10 +1,13 @@
 module github.com/go-idavoll/idunn-fyne
 
-go 1.25.0
+go 1.26.0
 
+// idunn is pinned to the commit that introduced the byte-level Observer fields
+// this sidecar renders (hook.Event.BytesDone/BytesTotal/Source, IDN-12/IDN-19).
+// Move it to a tagged release once one carries them.
 require (
 	fyne.io/fyne/v2 v2.8.1
-	github.com/go-idavoll/idunn v0.0.0-20260814214152-a8a3be01047e
+	github.com/go-idavoll/idunn v0.0.0-20260915033350-66b06ed50b42
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -12,6 +15,7 @@ require (
 	fyne.io/systray v1.12.3-0.20260810170012-af4e8e793ec4 // indirect
 	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/FyshOS/fancyfs v0.0.1 // indirect
+	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/anthonynsimon/bild v0.14.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/clipperhouse/uax29/v2 v2.2.0 // indirect
@@ -49,7 +53,7 @@ require (
 	golang.org/x/crypto v0.54.0 // indirect
 	golang.org/x/image v0.45.0 // indirect
 	golang.org/x/net v0.56.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/term v0.45.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260727163830-6c54dddc4772 // indirect

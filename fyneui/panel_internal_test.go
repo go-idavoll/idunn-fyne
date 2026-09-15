@@ -88,8 +88,8 @@ func TestRenderTracksASuccessfulTransaction(t *testing.T) {
 	if w.message.Text != "installed 1.1.0" {
 		t.Errorf("message = %q, want the last one", w.message.Text)
 	}
-	if got := w.bar.Value; got != steps[hook.PhaseCommit].fraction {
-		t.Errorf("bar = %v, want %v", got, steps[hook.PhaseCommit].fraction)
+	if got := w.bar.Value; got != steps[hook.PhaseCommit].from {
+		t.Errorf("bar = %v, want %v", got, steps[hook.PhaseCommit].from)
 	}
 	if !w.banner.Hidden {
 		t.Error("the failure banner is showing after a clean run")

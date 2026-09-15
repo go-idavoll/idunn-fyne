@@ -101,29 +101,49 @@ func TestFractionHoldsOnAnUnknownPhase(t *testing.T) {
 	}
 }
 
-// TestFractionHonoursRealProgress covers the branch production does not reach
-// yet. Both emitters in idunn hardcode Progress: -1; on the day one of them
-// reports a real fraction, this package must defer to it rather than override it
-// with a phase guess.
-func TestFractionHonoursRealProgress(t *testing.T) {
+// TestFractionPlacesRealProgressInsideItsPhase. Staging reports a real fraction
+// of ITSELF, and the bar is a position in the whole transaction: the one is
+// placed inside the span the other owns, never used as it. Bytes fully staged
+// must therefore not fill the bar -- the install has not happened yet.
+func TestFractionPlacesRealProgressInsideItsPhase(t *testing.T) {
+	at := func(p hook.Phase, progress float64) float64 {
+		return fyneui.Fraction(fyneui.Snapshot{Phase: p, Progress: progress})
+	}
+	var (
+		start = at(hook.PhaseDownload, -1)
+		end   = at(hook.PhaseQuiesce, -1)
+	)
 	for _, tc := range []struct {
 		progress float64
 		want     float64
 	}{
-		{0, 0},
-		{0.42, 0.42},
-		{1, 1},
+		{0, start},
+		{0.5, 0.325},
+		{1, 0.45},
 	} {
-		got := fyneui.Fraction(fyneui.Snapshot{Phase: hook.PhaseCheck, Progress: tc.progress})
-		if got != tc.want {
-			t.Errorf("Fraction(check, progress=%v) = %v, want %v: a real progress "+
-				"value must win over the derived one", tc.progress, got, tc.want)
+		if got := at(hook.PhaseDownload, tc.progress); got != tc.want {
+			t.Errorf("Fraction(download, progress=%v) = %v, want %v", tc.progress, got, tc.want)
 		}
 	}
+	if full := at(hook.PhaseDownload, 1); full >= 1 {
+		t.Errorf("fully staged bytes fill the bar (%v); the swap has not happened yet", full)
+	} else if full > end {
+		t.Errorf("fully staged bytes reach %v, past where the next phase starts (%v); "+
+			"the bar would move backwards", full, end)
+	}
+
 	// Out of range is not progress; fall back to the phase.
-	got := fyneui.Fraction(fyneui.Snapshot{Phase: hook.PhaseCommit, Progress: 4})
-	if got != fyneui.Fraction(fyneui.Snapshot{Phase: hook.PhaseCommit, Progress: -1}) {
-		t.Errorf("an out-of-range progress of 4 was used as a fraction")
+	if got, want := at(hook.PhaseCommit, 4), at(hook.PhaseCommit, -1); got != want {
+		t.Errorf("an out-of-range progress of 4 was used as a fraction: %v, want %v", got, want)
+	}
+}
+
+// TestFractionHoldsOnAnUnknownPhaseWithRealProgress. A progress value says how
+// far through a phase the transaction is, so it is meaningless without knowing
+// where that phase sits. An unknown phase holds, progress or not.
+func TestFractionHoldsOnAnUnknownPhaseWithRealProgress(t *testing.T) {
+	if got := fyneui.Fraction(fyneui.Snapshot{Phase: "teleport", Progress: 0.9}); got >= 0 {
+		t.Errorf("Fraction(unknown, progress=0.9) = %v, want a negative hold value", got)
 	}
 }
 

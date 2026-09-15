@@ -15,6 +15,7 @@
 package fixture_test
 
 import (
+	"bytes"
 	"errors"
 	"strings"
 	"testing"
@@ -154,6 +155,75 @@ func TestResolverTamperOnlyOnTheSecondRead(t *testing.T) {
 	}
 	if string(second) != "tampered" {
 		t.Error("the second read was not tampered with")
+	}
+}
+
+// TestStreamingSurfaceMirrorsTheSignedBytes covers the three methods staging
+// actually consumes. Materialize hands out what Target hands out, Tamper
+// included; TargetLength and VerifyStream answer from what was published,
+// because that is where a signed length and a signed hash stand. A resolver
+// that tampered and then agreed with itself could not demonstrate
+// VerifyAfterApply catching anything.
+func TestStreamingSurfaceMirrorsTheSignedBytes(t *testing.T) {
+	r := fixture.NewResolver()
+	d, blobs := fixture.Build("1.0.0", "linux", "amd64", release.Requirements{})
+	r.Publish(d, blobs)
+
+	target := d.Files[0].Target
+	published := blobs[target]
+
+	var buf bytes.Buffer
+	if err := r.Materialize(target, &buf); err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	if !bytes.Equal(buf.Bytes(), published) {
+		t.Error("Materialize did not stream the published bytes")
+	}
+	if n, err := r.TargetLength(target); err != nil || n != int64(len(published)) {
+		t.Errorf("TargetLength = %v, %v; want %d, nil", n, err, len(published))
+	}
+	if err := r.VerifyStream(target, bytes.NewReader(published)); err != nil {
+		t.Errorf("VerifyStream rejected the published bytes: %v", err)
+	}
+	if err := r.VerifyStream(target, bytes.NewReader([]byte("tampered"))); err == nil {
+		t.Error("VerifyStream admitted bytes that were never published")
+	}
+	if err := r.VerifyStream(target, bytes.NewReader(append(append([]byte{}, published...), 'x'))); err == nil {
+		t.Error("VerifyStream admitted a payload longer than the signed one")
+	}
+
+	// A target that was never published is not a verdict either way.
+	if err := r.Materialize("payloads/v1/missing", &buf); err == nil {
+		t.Error("Materialize succeeded for a path that was never published")
+	}
+	if _, err := r.TargetLength("payloads/v1/missing"); err == nil {
+		t.Error("TargetLength succeeded for a path that was never published")
+	}
+	if err := r.VerifyStream("payloads/v1/missing", bytes.NewReader(nil)); err == nil {
+		t.Error("VerifyStream succeeded for a path that was never published")
+	}
+}
+
+// TestVerifyStreamIsNotFooledByTamper is the VerifyAfterApply demo in miniature:
+// staging is handed bad bytes and writes them, and the post-apply re-read is the
+// thing that refuses them.
+func TestVerifyStreamIsNotFooledByTamper(t *testing.T) {
+	r := fixture.NewResolver()
+	d, blobs := fixture.Build("1.0.0", "linux", "amd64", release.Requirements{})
+	r.Publish(d, blobs)
+	r.Tamper = func(_ string, _ int, _ []byte) []byte { return []byte("tampered") }
+
+	target := d.Files[0].Target
+
+	var staged bytes.Buffer
+	if err := r.Materialize(target, &staged); err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	if staged.String() != "tampered" {
+		t.Fatal("Tamper did not reach Materialize; the demo would show nothing")
+	}
+	if err := r.VerifyStream(target, bytes.NewReader(staged.Bytes())); err == nil {
+		t.Error("VerifyStream admitted the tampered bytes it had just handed out")
 	}
 }
 

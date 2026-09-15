@@ -32,10 +32,12 @@
 //  2. A panic in an Observer is not recovered. idunn says so in as many words:
 //     "an Observer that panics is the host's problem". This package is that part
 //     of the host, so it simply never panics.
-//  3. hook.Event.Progress is always -1 today. Both emitters hardcode it
-//     (core/updater/apply.go:431, core/launch/launch.go:225), so there is no
-//     byte-level progress to render. [Fraction] derives a step count from the
-//     phase instead, and says so rather than calling it a percentage.
+//  3. hook.Event.Progress carries a real fraction only while staging, where it
+//     is the bytes written against the total taken from the signed lengths, and
+//     -1 everywhere else. It is a fraction of staging and not of the update, so
+//     [Fraction] places it inside the span the phase owns rather than handing it
+//     to the bar; over the rest of a transaction the bar remains a step count,
+//     and is never labelled as a percentage of a download.
 //  4. fyne.Do dereferences fyne.CurrentApp, which is nil until an app is
 //     started. Calling it from OnEvent before the host has built its app is a
 //     nil-pointer panic on the updater's goroutine, which by (2) is fatal.
@@ -94,7 +96,7 @@ const DefaultConfirmTimeout = 5 * time.Second
 type Snapshot struct {
 	Phase    hook.Phase
 	Message  string
-	Progress float64 // as received from core; -1 today.
+	Progress float64 // as received from core: a fraction of the phase, or -1.
 	Err      error
 	Seq      uint64 // monotonic; 0 means nothing has happened yet.
 	Log      []hook.Event
